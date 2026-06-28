@@ -1,0 +1,20 @@
+{
+  "name": "obsidian-homepage",
+  "version": "1.0.0",
+  "description": "Obsidian 启动时自动展示可编辑的首页",
+  "main": "main.js",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+    "lint": "tsc --noEmit -skipLibCheck"
+  },
+  "keywords": ["obsidian", "obsidian-plugin"],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "esbuild": "^0.20.0",
+    "obsidian": "latest",
+    "typescript": "^5.0.0"
+  }
+}

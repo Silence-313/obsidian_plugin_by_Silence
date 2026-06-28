@@ -1,0 +1,9 @@
+{
+  "id": "homepage",
+  "name": "Homepage",
+  "version": "1.0.0",
+  "minAppVersion": "1.5.0",
+  "description": "Obsidian 启动时自动展示可编辑的首页",
+  "author": "",
+  "isDesktopOnly": false
+}
