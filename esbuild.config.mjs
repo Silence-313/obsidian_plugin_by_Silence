@@ -33,7 +33,7 @@ const context = await esbuild.context({
   logLevel: "info",
   sourcemap: production ? false : "inline",
   treeShaking: true,
-  outfile: "main.js",
+  outfile: "/Users/xuejingchen/Obsidian/Silence/.obsidian/plugins/homepage/main.js",
 });
 
 if (production) {
