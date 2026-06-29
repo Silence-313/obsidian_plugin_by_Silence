@@ -555,7 +555,7 @@ class HomepageView extends ItemView {
 
   private isInteractiveTarget(target: HTMLElement): boolean {
     if (target.closest("button, input, select, textarea")) return true;
-    if (target.closest(".calendar-day, .todo-check, .todo-delete, .todo-filter-chip")) return true;
+    if (target.closest(".calendar-day, .todo-check, .todo-delete, .todo-filter-chip, .yesterday-sync-one, .yesterday-sync-all")) return true;
     if (target.closest(".timer-picker-wrap")) return true;
     return false;
   }
@@ -1356,6 +1356,13 @@ class HomepageView extends ItemView {
     greetingTextEl.textContent = `${period}好，`;
   }
 
+  private getYesterdayKey(dateKey: string): string {
+    const [y, m, d] = dateKey.split("-").map(Number);
+    const date = new Date(y, m - 1, d);
+    date.setDate(date.getDate() - 1);
+    return formatDateKey(date.getFullYear(), date.getMonth(), date.getDate());
+  }
+
   private getDateColorStats(dateKey: string) {
     return TODO_COLORS.map(c => {
       const todos = this.plugin.settings.todos.filter(t => t.date === dateKey && t.color === c.value);
@@ -1399,7 +1406,73 @@ class HomepageView extends ItemView {
           </div>
         `;
       }).join("")}
+      ${(() => {
+        const yesterdayKey = this.getYesterdayKey(this.selectedDate);
+        const undone = this.plugin.settings.todos.filter(t => t.date === yesterdayKey && !t.done);
+        if (undone.length === 0) return "";
+        const [, ym, yd] = yesterdayKey.split("-");
+        return `
+          <div style="margin-top: 12px; border-top: 1px solid var(--background-modifier-border); padding-top: 8px;">
+            <div style="font-size: 10px; font-weight: 600; color: var(--text-muted); margin-bottom: 4px; display: flex; align-items: center; justify-content: space-between;">
+              <span>昨${Number(ym)}.${Number(yd)}</span>
+              <span class="yesterday-sync-all" style="cursor: pointer; color: var(--interactive-accent); font-weight: 400;">全→</span>
+            </div>
+            ${undone.map(t => `
+              <div class="yesterday-item" data-id="${t.id}" style="
+                display: flex; align-items: center; gap: 3px;
+                padding: 2px 0; font-size: 10px;
+              ">
+                <span style="
+                  width: 5px; height: 5px; border-radius: 50%; background: ${t.color}; flex-shrink: 0;
+                "></span>
+                <span style="
+                  flex: 1; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+                ">${this.escapeHtml(t.text)}</span>
+                <span class="yesterday-sync-one" style="
+                  cursor: pointer; color: var(--text-faint); font-size: 11px; flex-shrink: 0;
+                ">→</span>
+              </div>
+            `).join("")}
+          </div>
+        `;
+      })()}
     `;
+
+    // bind yesterday sync events
+    statsContainer.querySelector(".yesterday-sync-all")?.addEventListener("click", () => this.syncAllYesterday());
+    statsContainer.querySelectorAll(".yesterday-sync-one").forEach(el => {
+      el.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const id = (el as HTMLElement).parentElement!.dataset.id!;
+        this.syncTodoToToday(id);
+      });
+    });
+  }
+
+  private syncTodoToToday(id: string) {
+    const todo = this.plugin.settings.todos.find(t => t.id === id);
+    if (!todo) return;
+    todo.date = this.selectedDate;
+    this.plugin.saveSettings();
+    this.renderStats();
+    this.renderCalendar();
+    this.renderTodo();
+  }
+
+  private syncAllYesterday() {
+    const yesterdayKey = this.getYesterdayKey(this.selectedDate);
+    let changed = false;
+    for (const todo of this.plugin.settings.todos) {
+      if (todo.date === yesterdayKey && !todo.done) {
+        todo.date = this.selectedDate;
+        changed = true;
+      }
+    }
+    if (!changed) return;
+    this.plugin.saveSettings();
+    this.renderStats();
+    this.renderCalendar();
+    this.renderTodo();
   }
 
   private renderCalendar() {
