@@ -8,6 +8,8 @@ interface TodoItem {
   color: string;
   done: boolean;
   date: string;
+  startTime?: string;
+  endTime?: string;
 }
 
 function formatDateKey(year: number, month: number, day: number): string {
@@ -40,6 +42,7 @@ const DEFAULT_COMPONENTS: ComponentInfo[] = [
   { id: "schedule", name: "日程中心", added: true },
   { id: "timer", name: "计时器", added: false },
   { id: "desktop", name: "超级桌面", added: false },
+  { id: "todolist", name: "待办列表", added: false },
 ];
 
 const DEFAULT_SETTINGS: HomepageSettings = {
@@ -122,12 +125,14 @@ export default class HomepagePlugin extends Plugin {
 }
 
 class TodoAddModal extends Modal {
-  private onAdd: (text: string, color: string, date: string) => void;
+  private onAdd: (text: string, color: string, date: string, startTime: string, endTime: string) => void;
   private pickedColor = TODO_COLORS[1].value;
   private dateKey: string;
   private dateStr: string;
+  private startTime = "";
+  private endTime = "";
 
-  constructor(app: App, dateKey: string, onAdd: (text: string, color: string, date: string) => void) {
+  constructor(app: App, dateKey: string, onAdd: (text: string, color: string, date: string, startTime: string, endTime: string) => void) {
     super(app);
     this.dateKey = dateKey;
     this.onAdd = onAdd;
@@ -197,6 +202,44 @@ class TodoAddModal extends Modal {
       });
     });
 
+    // Time inputs
+    contentEl.createEl("div", { text: "时间段（可选）" }, el => {
+      el.style.cssText = "font-size: 13px; color: var(--text-muted); margin-bottom: 8px;";
+    });
+
+    const timeRow = contentEl.createEl("div");
+    timeRow.style.cssText = "display: flex; gap: 12px; margin-bottom: 20px; align-items: center;";
+
+    const startInput = timeRow.createEl("input", { type: "time" });
+    startInput.style.cssText = `
+      padding: 4px 8px;
+      font-size: 13px;
+      border: 1px solid var(--background-modifier-border);
+      border-radius: 4px;
+      background: var(--background-modifier-hover);
+      color: var(--text-normal);
+      outline: none;
+      font-family: inherit;
+    `;
+    startInput.addEventListener("input", () => { this.startTime = startInput.value; });
+
+    timeRow.createEl("span", { text: "—" }, el => {
+      el.style.cssText = "font-size: 13px; color: var(--text-muted);";
+    });
+
+    const endInput = timeRow.createEl("input", { type: "time" });
+    endInput.style.cssText = `
+      padding: 4px 8px;
+      font-size: 13px;
+      border: 1px solid var(--background-modifier-border);
+      border-radius: 4px;
+      background: var(--background-modifier-hover);
+      color: var(--text-normal);
+      outline: none;
+      font-family: inherit;
+    `;
+    endInput.addEventListener("input", () => { this.endTime = endInput.value; });
+
     const btnRow = contentEl.createEl("div");
     btnRow.style.cssText = "display: flex; justify-content: flex-end; gap: 8px;";
 
@@ -228,7 +271,7 @@ class TodoAddModal extends Modal {
   private confirm(input: HTMLInputElement) {
     const text = input.value.trim();
     if (!text) return;
-    this.onAdd(text, this.pickedColor, this.dateKey);
+    this.onAdd(text, this.pickedColor, this.dateKey, this.startTime, this.endTime);
     this.close();
   }
 
@@ -338,6 +381,7 @@ class HomepageView extends ItemView {
   private timerIntervalId: number | null = null;
   private cardResizeObserver: ResizeObserver | null = null;
   private desktopCurrentPaths: string[] = [];
+  private todoListMode: "today" | "week" | "month" = "today";
 
   constructor(leaf: WorkspaceLeaf, plugin: HomepagePlugin) {
     super(leaf);
@@ -706,6 +750,71 @@ class HomepageView extends ItemView {
           </div>
           `).join("")}
         </div>
+        <div id="homepage-todolist-wrapper" data-component-id="todolist" style="
+          position: absolute;
+          resize: both;
+          overflow: hidden;
+          width: 380px;
+          height: 420px;
+          min-width: 320px;
+          min-height: 280px;
+          max-width: 100%;
+          border-radius: 14px;
+          box-shadow: 0 4px 24px rgba(0,0,0,0.12), 0 0 0 1px var(--background-modifier-border);
+          display: ${this.isComponentAdded("todolist") && !this.isComponentAdded("schedule") ? "block" : "none"};
+        ">
+          <div style="
+            display: flex;
+            flex-direction: column;
+            width: 100%;
+            height: 100%;
+            background: var(--background-primary);
+            overflow: hidden;
+            border-radius: 14px;
+          ">
+            <div id="homepage-todolist-header" style="
+              display: flex;
+              align-items: center;
+              gap: 8px;
+              padding: 10px 12px;
+              border-bottom: 1px solid var(--background-modifier-border);
+              flex-shrink: 0;
+            ">
+              <span style="font-size: 14px; font-weight: 600; color: var(--text-normal);">待办列表</span>
+              <div style="display: flex; gap: 4px; flex: 1;">
+                ${(["today","week","month"] as const).map(m => {
+                  const labels: Record<string, string> = { today: "今天", week: "本周", month: "本月" };
+                  return `<button class="todolist-tab" data-mode="${m}" style="
+                    padding: 2px 8px;
+                    font-size: 11px;
+                    border-radius: 4px;
+                    border: 1px solid var(--background-modifier-border);
+                    background: ${this.todoListMode === m ? "var(--interactive-accent)" : "transparent"};
+                    color: ${this.todoListMode === m ? "var(--text-on-accent)" : "var(--text-muted)"};
+                    cursor: pointer;
+                    font-family: inherit;
+                  ">${labels[m]}</button>`;
+                }).join("")}
+              </div>
+              <button class="todolist-add" style="
+                background: var(--interactive-accent);
+                color: var(--text-on-accent);
+                border: none;
+                border-radius: 4px;
+                padding: 1px 8px;
+                font-size: 15px;
+                line-height: 1.4;
+                cursor: pointer;
+                flex-shrink: 0;
+              ">+</button>
+            </div>
+            <div id="homepage-todolist-content" style="
+              flex: 1;
+              overflow-y: auto;
+              padding: 8px 12px;
+            "></div>
+          </div>
+        </div>
       </div>
       <div id="homepage-sidebar" style="
         position: absolute;
@@ -729,7 +838,11 @@ class HomepageView extends ItemView {
     if (this.isComponentAdded("schedule")) {
       this.renderStats();
       this.renderCalendar();
-      this.renderTodo();
+      if (this.isComponentAdded("todolist")) {
+        this.renderTodoListEmbedded();
+      } else {
+        this.renderTodo();
+      }
       this.setupCardPosition(container, "schedule", "#homepage-card-wrapper");
     }
 
@@ -744,6 +857,11 @@ class HomepageView extends ItemView {
         this.initDesktopDisplay(i);
         this.setupCardPosition(container, `desktop-${i}`, `#homepage-desktop-wrapper-${i}`);
       }
+    }
+
+    if (this.isComponentAdded("todolist") && !this.isComponentAdded("schedule")) {
+      this.renderTodoListStandalone();
+      this.setupCardPosition(container, "todolist", "#homepage-todolist-wrapper");
     }
 
     this.observeCardResizes();
@@ -780,6 +898,7 @@ class HomepageView extends ItemView {
     if (target.closest(".calendar-day, .todo-check, .todo-delete, .todo-filter-chip, .yesterday-sync-one, .yesterday-sync-all")) return true;
     if (target.closest(".timer-picker-wrap")) return true;
     if (target.closest(".desktop-item")) return true;
+    if (target.closest(".todolist-tab, .todolist-check, .todolist-delete, .todolist-add, .todolist-gantt-bar")) return true;
     return false;
   }
 
@@ -1689,6 +1808,7 @@ class HomepageView extends ItemView {
       schedule: `<svg width="28" height="28" viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.7"><rect x="4" y="5" width="20" height="19" rx="2"/><line x1="4" y1="11" x2="24" y2="11"/><line x1="9" y1="2" x2="9" y2="7"/><line x1="19" y1="2" x2="19" y2="7"/><line x1="10" y1="15" x2="18" y2="15"/><line x1="12" y1="19" x2="16" y2="19"/></svg>`,
       timer: `<svg width="28" height="28" viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.7"><circle cx="14" cy="15" r="9"/><line x1="14" y1="15" x2="14" y2="9"/><line x1="14" y1="15" x2="17" y2="15"/><line x1="11" y1="3" x2="17" y2="3"/><line x1="14" y1="3" x2="14" y2="6"/></svg>`,
       desktop: `<svg width="28" height="28" viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.7"><rect x="2" y="3" width="24" height="17" rx="2"/><line x1="8" y1="23" x2="20" y2="23"/><line x1="14" y1="20" x2="14" y2="23"/></svg>`,
+      todolist: `<svg width="28" height="28" viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.7"><rect x="5" y="4" width="18" height="20" rx="2"/><line x1="9" y1="10" x2="19" y2="10"/><line x1="9" y1="14" x2="19" y2="14"/><line x1="9" y1="18" x2="15" y2="18"/></svg>`,
     };
     return icons[id] || `<svg width="28" height="28" viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.7"><rect x="4" y="4" width="20" height="20" rx="3"/></svg>`;
   }
@@ -1915,6 +2035,21 @@ class HomepageView extends ItemView {
           </div>
         `;
       })()}
+      ${(() => {
+        const doneToday = this.plugin.settings.todos.filter(t => t.date === this.selectedDate && t.done);
+        if (doneToday.length === 0) return "";
+        return `
+          <div style="margin-top: 12px; border-top: 1px solid var(--background-modifier-border); padding-top: 8px;">
+            <div style="font-size: 10px; font-weight: 600; color: var(--text-muted); margin-bottom: 4px;">已完成</div>
+            ${doneToday.map(t => `
+              <div style="font-size: 10px; color: var(--text-faint); text-decoration: line-through; padding: 1px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                <span style="display:inline-block; width:5px; height:5px; border-radius:50%; background:${t.color}; vertical-align:middle; margin-right:3px;"></span>
+                ${this.escapeHtml(t.text)}
+              </div>
+            `).join("")}
+          </div>
+        `;
+      })()}
     `;
 
     // bind yesterday sync events
@@ -1936,6 +2071,7 @@ class HomepageView extends ItemView {
     this.renderStats();
     this.renderCalendar();
     this.renderTodo();
+    if (this.isComponentAdded("todolist")) this.refreshTodoListView();
   }
 
   private syncAllYesterday() {
@@ -1952,6 +2088,7 @@ class HomepageView extends ItemView {
     this.renderStats();
     this.renderCalendar();
     this.renderTodo();
+    if (this.isComponentAdded("todolist")) this.refreshTodoListView();
   }
 
   private renderCalendar() {
@@ -2134,6 +2271,7 @@ class HomepageView extends ItemView {
   private searchQuery = "";
 
   private renderTodo() {
+    if (this.isComponentAdded("todolist")) return; // embedded mode: renderTodoListEmbedded handles this
     const todoContainer = this.containerEl.querySelector("#homepage-todo");
     if (!todoContainer) return;
 
@@ -2222,6 +2360,7 @@ class HomepageView extends ItemView {
               text-overflow: ellipsis;
               white-space: nowrap;
             ">${this.escapeHtml(todo.text)}</span>
+            ${todo.startTime ? `<span style="font-size:10px; color:var(--text-faint); flex-shrink:0;">${todo.startTime}${todo.endTime ? `-${todo.endTime}` : ""}</span>` : ""}
             <span class="todo-delete" style="
               cursor: pointer;
               color: var(--text-faint);
@@ -2240,7 +2379,7 @@ class HomepageView extends ItemView {
   private bindTodoEvents() {
     // Add button
     this.containerEl.querySelector("#todo-add-btn")?.addEventListener("click", () => {
-      new TodoAddModal(this.app, this.selectedDate, (text, color, date) => this.addTodo(text, color, date)).open();
+      new TodoAddModal(this.app, this.selectedDate, (text, color, date, startTime, endTime) => this.addTodo(text, color, date, startTime, endTime)).open();
     });
 
     // Search
@@ -2295,6 +2434,337 @@ class HomepageView extends ItemView {
 
   }
 
+  // Embedded mode: render full UI (tabs + content) into schedule's right panel
+  private renderTodoListEmbedded() {
+    const container = this.containerEl.querySelector("#homepage-todo");
+    if (!container) return;
+
+    const oldContent = container.querySelector("#homepage-todolist-embed-content");
+    const scrollTop = oldContent ? oldContent.scrollTop : 0;
+
+    container.innerHTML = `
+      <div style="display:flex; align-items:center; gap:4px; margin-bottom:6px; flex-shrink:0;">
+        <span style="font-size:12px; font-weight:600; color:var(--text-normal);">待办</span>
+        <div style="display:flex; gap:3px; flex:1;">
+          ${(["today","week","month"] as const).map(m => {
+            const labels: Record<string, string> = { today: "今天", week: "本周", month: "本月" };
+            return `<button class="todolist-tab" data-mode="${m}" style="
+              padding: 1px 6px;
+              font-size: 10px;
+              border-radius: 3px;
+              border: 1px solid var(--background-modifier-border);
+              background: ${this.todoListMode === m ? "var(--interactive-accent)" : "transparent"};
+              color: ${this.todoListMode === m ? "var(--text-on-accent)" : "var(--text-muted)"};
+              cursor: pointer;
+              font-family: inherit;
+              line-height: 1.5;
+            ">${labels[m]}</button>`;
+          }).join("")}
+        </div>
+        <button class="todolist-add" style="
+          background: var(--interactive-accent);
+          color: var(--text-on-accent);
+          border: none;
+          border-radius: 3px;
+          padding: 0px 6px;
+          font-size: 13px;
+          line-height: 1.5;
+          cursor: pointer;
+          flex-shrink: 0;
+        ">+</button>
+      </div>
+      <div id="homepage-todolist-embed-content" style="flex:1; overflow-y:auto;"></div>
+    `;
+
+    const newContent = container.querySelector("#homepage-todolist-embed-content") as HTMLElement;
+    this.renderTodoListContent(newContent);
+    newContent.scrollTop = scrollTop;
+    this.bindTodoListEvents();
+  }
+
+  // Standalone mode: render into the separate todolist card
+  private renderTodoListStandalone() {
+    const content = this.containerEl.querySelector("#homepage-todolist-content");
+    if (!content) return;
+
+    // Update tab button styles in header
+    this.containerEl.querySelectorAll(".todolist-tab").forEach(el => {
+      const mode = (el as HTMLElement).dataset.mode;
+      const active = mode === this.todoListMode;
+      (el as HTMLElement).style.background = active ? "var(--interactive-accent)" : "transparent";
+      (el as HTMLElement).style.color = active ? "var(--text-on-accent)" : "var(--text-muted)";
+    });
+
+    this.renderTodoListContent(content);
+    this.bindTodoListEvents();
+  }
+
+  // Shared rendering: Gantt for today, grouped list for week/month
+  private refreshTodoListView() {
+    if (this.isComponentAdded("schedule") && this.isComponentAdded("todolist")) {
+      this.renderTodoListEmbedded();
+    } else if (this.isComponentAdded("todolist")) {
+      this.renderTodoListStandalone();
+    }
+  }
+
+  private renderTodoListContent(content: Element) {
+    const scrollTop = (content as HTMLElement).scrollTop;
+
+    const today = new Date();
+    const todayKey = formatDateKey(today.getFullYear(), today.getMonth(), today.getDate());
+
+    let dateFilter: (date: string) => boolean;
+    if (this.todoListMode === "today") {
+      dateFilter = (d) => d === todayKey;
+    } else if (this.todoListMode === "week") {
+      const { start, end } = this.getWeekRange();
+      dateFilter = (d) => d >= start && d <= end;
+    } else {
+      const { start, end } = this.getMonthRange();
+      dateFilter = (d) => d >= start && d <= end;
+    }
+
+    const todos = this.plugin.settings.todos.filter(t => dateFilter(t.date));
+
+    if (this.todoListMode === "today") {
+      const timed = todos.filter(t => t.startTime && t.endTime);
+      const untimed = todos.filter(t => !t.startTime || !t.endTime);
+
+      if (timed.length > 0) {
+        this.renderGanttView(content, timed, untimed);
+      } else {
+        this.renderSimpleList(content, todos, false);
+      }
+    } else {
+      const grouped: Map<string, TodoItem[]> = new Map();
+      for (const t of todos) {
+        const list = grouped.get(t.date) || [];
+        list.push(t);
+        grouped.set(t.date, list);
+      }
+      const sortedDates = [...grouped.keys()].sort();
+
+      if (sortedDates.length === 0) {
+        content.innerHTML = `<div style="text-align:center; color:var(--text-faint); font-size:12px; padding:20px 0;">暂无待办</div>`;
+      } else {
+        content.innerHTML = sortedDates.map(dateKey => {
+          const [, m, d] = dateKey.split("-").map(Number);
+          const dateLabel = `${m}月${d}日`;
+          const items = grouped.get(dateKey)!;
+          return `
+            <div style="margin-bottom: 10px;">
+              <div style="font-size:12px; font-weight:600; color:var(--text-muted); margin-bottom:4px; padding-bottom:2px; border-bottom:1px solid var(--background-modifier-border);">${dateLabel}</div>
+              ${items.map(todo => this.renderTodoListItem(todo, true)).join("")}
+            </div>
+          `;
+        }).join("");
+      }
+    }
+
+    (content as HTMLElement).scrollTop = scrollTop;
+  }
+
+  private parseMinutes(time: string): number {
+    const [h, m] = time.split(":").map(Number);
+    return h * 60 + m;
+  }
+
+  private formatDuration(startTime: string, endTime: string): string {
+    const mins = this.parseMinutes(endTime) - this.parseMinutes(startTime);
+    const h = Math.floor(mins / 60);
+    const m = mins % 60;
+    if (h === 0) return `${m}分钟`;
+    if (m === 0) return `${h}小时`;
+    return `${h}小时${m}分钟`;
+  }
+
+  private renderGanttView(container: Element, timed: TodoItem[], untimed: TodoItem[]) {
+    const HOUR_H = 40;
+    const LABEL_W = 42;
+    const STRIP_W = 5;
+    const BAR_LEFT = LABEL_W + 4;
+    const BAR_RIGHT = 4;
+
+    // Determine time range
+    let minMin = 24 * 60, maxMin = 0;
+    for (const t of timed) {
+      if (t.startTime) minMin = Math.min(minMin, this.parseMinutes(t.startTime));
+      if (t.endTime) maxMin = Math.max(maxMin, this.parseMinutes(t.endTime));
+    }
+    // Clamp to 06:00-24:00
+    minMin = Math.min(minMin, 360);  // 06:00
+    maxMin = Math.max(maxMin, 1380); // 23:00
+    // Round to full hours
+    const startHour = Math.floor(minMin / 60);
+    const endHour = Math.ceil(maxMin / 60);
+    const totalH = endHour - startHour;
+    const totalHeight = totalH * HOUR_H;
+
+    let html = `<div style="position:relative; width:100%; height:${totalHeight + 16}px;">`;
+
+    // Hour grid lines + labels
+    for (let h = startHour; h <= endHour; h++) {
+      const top = (h - startHour) * HOUR_H;
+      html += `<div style="position:absolute; left:0; top:${top}px; width:${LABEL_W - 4}px; font-size:10px; color:var(--text-faint); text-align:right; padding-right:4px; line-height:1;">${String(h).padStart(2,"0")}:00</div>`;
+      html += `<div style="position:absolute; left:${BAR_LEFT}px; right:${BAR_RIGHT}px; top:${top}px; height:0; border-top:1px solid var(--background-modifier-border);"></div>`;
+    }
+
+    // Todo bars — thin colored strip + text beside it
+    for (const t of timed) {
+      const startMin = this.parseMinutes(t.startTime!);
+      const endMin = this.parseMinutes(t.endTime!);
+      const top = ((startMin - startHour * 60) / 60) * HOUR_H;
+      const h = Math.max(16, ((endMin - startMin) / 60) * HOUR_H);
+
+      html += `
+        <div class="todolist-gantt-bar" data-id="${t.id}" style="
+          position: absolute;
+          left: ${BAR_LEFT}px;
+          right: ${BAR_RIGHT}px;
+          top: ${top}px;
+          height: ${h}px;
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          box-sizing: border-box;
+        ">
+          <div style="
+            width: ${STRIP_W}px;
+            height: 100%;
+            min-height: 100%;
+            background: ${t.color};
+            border-radius: 3px;
+            flex-shrink: 0;
+            opacity: ${t.done ? 0.4 : 0.85};
+          "></div>
+          <div style="flex:1; min-width:0; display:flex; flex-direction:column; justify-content:center; gap:1px;">
+            <span style="font-size:11px; color:var(--text-normal); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; line-height:1.3; text-decoration:${t.done ? 'line-through' : 'none'}; opacity:${t.done ? 0.5 : 1};">${this.escapeHtml(t.text)}</span>
+            <span style="font-size:10px; color:var(--text-muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; line-height:1.3;">${t.startTime}-${t.endTime} · ${this.formatDuration(t.startTime!, t.endTime!)}</span>
+          </div>
+          <span class="todolist-delete" style="cursor:pointer; color:var(--text-faint); font-size:13px; flex-shrink:0; font-weight:bold; visibility:hidden; line-height:1;">×</span>
+        </div>`;
+    }
+
+    html += `</div>`;
+
+    // Untimed todos below the gantt
+    if (untimed.length > 0) {
+      html += `<div style="margin-top:12px; padding-top:8px; border-top:1px solid var(--background-modifier-border);">`;
+      html += untimed.map(t => this.renderTodoListItem(t, true)).join("");
+      html += `</div>`;
+    }
+
+    container.innerHTML = html;
+  }
+
+  private renderTodoListItem(todo: TodoItem, showTime: boolean): string {
+    const timeStr = (showTime && todo.startTime) ? ` ${todo.startTime}${todo.endTime ? `-${todo.endTime}` : ""}` : "";
+    return `
+      <div class="todolist-item" data-id="${todo.id}" style="display:flex; align-items:center; gap:6px; padding:3px 4px; border-radius:4px; font-size:12px;">
+        <span class="todolist-check" style="cursor:pointer; font-size:14px; color:${todo.done ? 'var(--text-faint)' : todo.color}; flex-shrink:0;">${todo.done ? '☑' : '☐'}</span>
+        <span style="flex:1; color:var(--text-normal); text-decoration:${todo.done ? 'line-through' : 'none'}; opacity:${todo.done ? 0.5 : 1}; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${this.escapeHtml(todo.text)}</span>
+        ${timeStr ? `<span style="font-size:10px; color:var(--text-faint); flex-shrink:0;">${timeStr}</span>` : ""}
+        <span class="todolist-delete" style="cursor:pointer; color:var(--text-faint); font-size:13px; flex-shrink:0; visibility:hidden;">×</span>
+      </div>`;
+  }
+
+  private renderSimpleList(container: Element, todos: TodoItem[], showTime: boolean) {
+    if (todos.length === 0) {
+      container.innerHTML = `<div style="text-align:center; color:var(--text-faint); font-size:12px; padding:20px 0;">暂无待办</div>`;
+    } else {
+      container.innerHTML = todos.map(t => this.renderTodoListItem(t, showTime)).join("");
+    }
+  }
+
+  private bindTodoListEvents() {
+    // Check toggle
+    this.containerEl.querySelectorAll(".todolist-check").forEach(el => {
+      el.addEventListener("click", (e) => {
+        const id = (e.currentTarget as HTMLElement).parentElement!.dataset.id!;
+        this.toggleTodo(id);
+      });
+    });
+
+    // Delete
+    this.containerEl.querySelectorAll(".todolist-delete").forEach(el => {
+      el.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const id = (e.currentTarget as HTMLElement).parentElement!.dataset.id!;
+        this.deleteTodo(id);
+      });
+    });
+
+    // Hover show delete
+    this.containerEl.querySelectorAll(".todolist-item").forEach(el => {
+      el.addEventListener("mouseenter", () => {
+        const del = el.querySelector(".todolist-delete") as HTMLElement;
+        if (del) del.style.visibility = "visible";
+      });
+      el.addEventListener("mouseleave", () => {
+        const del = el.querySelector(".todolist-delete") as HTMLElement;
+        if (del) del.style.visibility = "hidden";
+      });
+    });
+
+    // Gantt bar toggle
+    this.containerEl.querySelectorAll(".todolist-gantt-bar").forEach(el => {
+      el.addEventListener("click", (e) => {
+        if ((e.target as HTMLElement).closest(".todolist-delete")) return;
+        const id = (e.currentTarget as HTMLElement).dataset.id!;
+        this.toggleTodo(id);
+      });
+      el.addEventListener("mouseenter", () => {
+        const del = el.querySelector(".todolist-delete") as HTMLElement;
+        if (del) del.style.visibility = "visible";
+      });
+      el.addEventListener("mouseleave", () => {
+        const del = el.querySelector(".todolist-delete") as HTMLElement;
+        if (del) del.style.visibility = "hidden";
+      });
+    });
+
+    // Tab buttons
+    this.containerEl.querySelectorAll(".todolist-tab").forEach(el => {
+      el.addEventListener("click", (e) => {
+        this.todoListMode = (e.currentTarget as HTMLElement).dataset.mode as "today" | "week" | "month";
+        this.refreshTodoListView();
+      });
+    });
+
+    // Add button
+    this.containerEl.querySelector(".todolist-add")?.addEventListener("click", () => {
+      const today = new Date();
+      const todayKey = formatDateKey(today.getFullYear(), today.getMonth(), today.getDate());
+      new TodoAddModal(this.app, todayKey, (text, color, date, startTime, endTime) => this.addTodo(text, color, date, startTime, endTime)).open();
+    });
+  }
+
+  private getWeekRange(): { start: string; end: string } {
+    const now = new Date();
+    const dayOfWeek = now.getDay();
+    const mondayOffset = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+    const monday = new Date(now);
+    monday.setDate(now.getDate() + mondayOffset);
+    const sunday = new Date(monday);
+    sunday.setDate(monday.getDate() + 6);
+    return {
+      start: formatDateKey(monday.getFullYear(), monday.getMonth(), monday.getDate()),
+      end: formatDateKey(sunday.getFullYear(), sunday.getMonth(), sunday.getDate()),
+    };
+  }
+
+  private getMonthRange(): { start: string; end: string } {
+    const now = new Date();
+    const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
+    const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+    return {
+      start: formatDateKey(firstDay.getFullYear(), firstDay.getMonth(), firstDay.getDate()),
+      end: formatDateKey(lastDay.getFullYear(), lastDay.getMonth(), lastDay.getDate()),
+    };
+  }
+
   private getFilteredTodos(): TodoItem[] {
     return this.plugin.settings.todos.filter(t => {
       if (t.date !== this.selectedDate) return false;
@@ -2304,19 +2774,22 @@ class HomepageView extends ItemView {
     });
   }
 
-  private addTodo(text: string, color: string, date: string) {
+  private addTodo(text: string, color: string, date: string, startTime: string, endTime: string) {
     const todo: TodoItem = {
       id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
       text,
       color,
       done: false,
       date,
+      startTime: startTime || undefined,
+      endTime: endTime || undefined,
     };
     this.plugin.settings.todos.push(todo);
     this.plugin.saveSettings();
     this.renderStats();
     this.renderCalendar();
     this.renderTodo();
+    if (this.isComponentAdded("todolist")) this.refreshTodoListView();
   }
 
   private toggleTodo(id: string) {
@@ -2327,6 +2800,7 @@ class HomepageView extends ItemView {
       this.renderStats();
       this.renderCalendar();
       this.renderTodo();
+      if (this.isComponentAdded("todolist")) this.refreshTodoListView();
     }
   }
 
@@ -2336,6 +2810,7 @@ class HomepageView extends ItemView {
     this.renderStats();
     this.renderCalendar();
     this.renderTodo();
+    if (this.isComponentAdded("todolist")) this.refreshTodoListView();
   }
 
   private escapeHtml(text: string): string {
