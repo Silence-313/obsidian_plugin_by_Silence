@@ -1,3 +1,7 @@
 .calendar-day:hover {
   background: var(--background-modifier-hover);
 }
+
+.timer-picker-scroll::-webkit-scrollbar {
+  display: none;
+}

@@ -28,7 +28,7 @@ npm run lint       # TypeScript 类型检查
 ## 文件结构
 
 ```
-main.ts              # 插件入口，全部类型、常量、类（~1000行）
+main.ts              # 插件入口，全部类型、常量、类（~1800行）
 manifest.json        # 插件元数据（id, name, minAppVersion）
 esbuild.config.mjs   # esbuild 打包配置
 styles.css           # 日历 hover 样式
@@ -54,14 +54,28 @@ styles.css           # 日历 hover 样式
 
 当前组件：
 - **日程中心** (`id: "schedule"`)：日历 + 待办 + 柱状图，打包在可拖拽、可缩放的圆角矩形卡片中
+- **计时器** (`id: "timer"`)：表盘/数字双模式倒计时，滚动选择器设定时间，到点弹窗提醒，默认未添加
+
+### 卡片系统
+
+所有组件卡片均为 `position: absolute` 的圆角矩形，统一特性：
+- **拖拽**：点击卡片任意非功能区域即可拖拽（排除按钮、输入框、日历日、待办勾选/删除等交互元素），不再依赖独立拖拽手柄
+- **缩放**：CSS `resize: both` + `overflow: hidden`，右下角浏览器原生 resize handle
+- **碰撞检测**：`constrainNoOverlap()` 检测卡片间重叠，以 12px 间隙推开到最近边缘
+- **纵向无限**：内容区 `overflow-y: auto`，卡片可向下任意拖放，`expandContentHeight()` 动态撑开滚动高度
 
 ### 关键实现细节
 
 - `formatDateKey(y, m, d)` 生成 `"YYYY-MM-DD"` 格式的日期键
 - TodoItem 的 `date` 字段关联日期，`color` 字段对应 `TODO_COLORS`（红/橙/黄/绿）
 - 日历日期选中态用 `2px solid var(--interactive-accent)` 描边（非今日），今日用 accent 实心填充
-- 卡片拖拽用 `setPointerCapture` 而非 document 级事件，避免泄漏
-- 卡片缩放用 CSS `resize: both` + `overflow: hidden`，最小 520×320px
+- `setPointerCapture` 用于卡片拖拽（pointerdown 在 wrapper 上而非 document），避免事件泄漏
+- `bindCardDrag()` 是统一的拖拽绑定方法，通过 getter/setter 参数支持不同卡片的坐标字段
+- `isInteractiveTarget(target)` 检查点击目标是否为按钮/输入框/日历日等，决定是否触发拖拽
+- `constrainNoOverlap()` 检测卡片间碰撞，沿最短方向推开（含 12px 间隙）
+- `expandContentHeight()` 根据最低卡片的底部位置动态设 `minHeight`，确保内容区可滚动到所有卡片
+- `renderTimerPicker(field, label, max, cur)` 生成 H/M/S 滚动选择器 HTML，消除三份重复模板
+- `initTimerDisplay` 的 outside-click 监听用存储 handler 引用 + removeEventListener 防止重复绑
 
 ## 部署到 Obsidian
 

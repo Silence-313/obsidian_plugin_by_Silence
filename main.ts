@@ -28,6 +28,7 @@ interface HomepageSettings {
 
 const DEFAULT_COMPONENTS: ComponentInfo[] = [
   { id: "schedule", name: "日程中心", added: true },
+  { id: "timer", name: "计时器", added: false },
 ];
 
 const DEFAULT_SETTINGS: HomepageSettings = {
@@ -91,7 +92,14 @@ export default class HomepagePlugin extends Plugin {
   }
 
   async loadSettings() {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    const data = await this.loadData();
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, data);
+    // merge missing default components into existing settings
+    for (const dc of DEFAULT_COMPONENTS) {
+      if (!this.settings.components.some(c => c.id === dc.id)) {
+        this.settings.components.push({ ...dc });
+      }
+    }
   }
 
   async saveSettings() {
@@ -223,6 +231,16 @@ class HomepageView extends ItemView {
   private selectedDate: string;
   private cardX = -1;
   private cardY = -1;
+  private timerCardX = -1;
+  private timerCardY = -1;
+  private timerHours = 0;
+  private timerMinutes = 5;
+  private timerSeconds = 0;
+  private timerRemaining = 0;
+  private timerRunning = false;
+  private timerFinished = false;
+  private timerDisplayMode: "clock" | "digital" = "clock";
+  private timerIntervalId: number | null = null;
 
   constructor(leaf: WorkspaceLeaf, plugin: HomepagePlugin) {
     super(leaf);
@@ -254,6 +272,10 @@ class HomepageView extends ItemView {
     if (this.intervalId !== null) {
       window.clearInterval(this.intervalId);
       this.intervalId = null;
+    }
+    if (this.timerIntervalId !== null) {
+      window.clearInterval(this.timerIntervalId);
+      this.timerIntervalId = null;
     }
   }
 
@@ -334,9 +356,10 @@ class HomepageView extends ItemView {
       </div>
       <div id="homepage-content" style="
         flex: 1;
-        min-height: 0;
+        min-height: 100%;
         position: relative;
-        overflow: hidden;
+        overflow-y: auto;
+        overflow-x: hidden;
       ">
         <div id="homepage-card-wrapper" style="
           position: absolute;
@@ -382,25 +405,72 @@ class HomepageView extends ItemView {
               flex-direction: column;
               gap: 6px;
             "></div>
-            <div id="homepage-card-drag-btn" style="
-              position: absolute;
-              right: 0;
-              bottom: 0;
-              width: 22px;
-              height: 22px;
+          </div>
+        </div>
+        <div id="homepage-timer-wrapper" style="
+          position: absolute;
+          resize: both;
+          overflow: hidden;
+          width: 300px;
+          height: 320px;
+          min-width: 260px;
+          min-height: 280px;
+          max-width: 100%;
+          border-radius: 14px;
+          box-shadow: 0 4px 24px rgba(0,0,0,0.12), 0 0 0 1px var(--background-modifier-border);
+          display: ${this.isComponentAdded("timer") ? "block" : "none"};
+        ">
+          <div id="homepage-timer-card" style="
+            display: flex;
+            flex-direction: column;
+            width: 100%;
+            height: 100%;
+            background: var(--background-primary);
+            overflow: hidden;
+            border-radius: 14px;
+            position: relative;
+            padding: 12px 16px;
+            box-sizing: border-box;
+            gap: 8px;
+          ">
+            <div style="display: flex; align-items: center; justify-content: space-between;">
+              <span style="font-size: 14px; font-weight: 600; color: var(--text-normal);">⏱ 计时器</span>
+              <button id="timer-mode-toggle" style="
+                background: transparent;
+                border: 1px solid var(--background-modifier-border);
+                border-radius: 4px;
+                color: var(--text-muted);
+                cursor: pointer;
+                font-size: 11px;
+                padding: 2px 6px;
+                font-family: inherit;
+              ">${this.timerDisplayMode === "clock" ? "数字" : "表盘"}</button>
+            </div>
+            <div id="timer-display" style="
+              flex: 1;
               display: flex;
               align-items: center;
               justify-content: center;
-              cursor: grab;
-              color: var(--text-faint);
-              font-size: 12px;
-              background: var(--background-secondary);
-              border-radius: 6px 0 0 0;
-              border-top: 1px solid var(--background-modifier-border);
-              border-left: 1px solid var(--background-modifier-border);
-              user-select: none;
-              z-index: 2;
-            " title="拖动移动">⋮</div>
+              min-height: 0;
+            "></div>
+            <div style="display: flex; align-items: center; justify-content: center; gap: 6px;">
+              ${this.renderTimerPicker("h", "时", 100, this.timerHours)}
+              ${this.renderTimerPicker("m", "分", 60, this.timerMinutes)}
+              ${this.renderTimerPicker("s", "秒", 60, this.timerSeconds)}
+            </div>
+            <div style="display: flex; justify-content: center; gap: 8px;">
+              <button id="timer-start-btn" style="
+                padding: 4px 14px; font-size: 12px; border: none; border-radius: 4px;
+                background: var(--interactive-accent); color: var(--text-on-accent);
+                cursor: pointer; font-family: inherit;
+              ">开始</button>
+              <button id="timer-reset-btn" style="
+                padding: 4px 14px; font-size: 12px; border: 1px solid var(--background-modifier-border);
+                border-radius: 4px; background: transparent; color: var(--text-muted);
+                cursor: pointer; font-family: inherit;
+                display: none;
+              ">重置</button>
+            </div>
           </div>
         </div>
         <div id="homepage-sidebar" style="
@@ -430,6 +500,13 @@ class HomepageView extends ItemView {
       this.setupCardDrag(container);
     }
 
+    if (this.isComponentAdded("timer")) {
+      this.initTimerDisplay();
+      this.setupTimerDrag(container);
+    }
+
+    this.expandContentHeight();
+
     const input = container.querySelector("#homepage-name-input") as HTMLInputElement;
     if (input) {
       input.addEventListener("change", () => this.saveName(input.value.trim()));
@@ -456,48 +533,542 @@ class HomepageView extends ItemView {
     }
   }
 
+  private isInteractiveTarget(target: HTMLElement): boolean {
+    if (target.closest("button, input, select, textarea")) return true;
+    if (target.closest(".calendar-day, .todo-check, .todo-delete, .todo-filter-chip")) return true;
+    if (target.closest(".timer-picker-wrap")) return true;
+    return false;
+  }
+
   private setupCardDrag(container: HTMLElement) {
     const wrapper = container.querySelector("#homepage-card-wrapper") as HTMLElement;
-    const handle = container.querySelector("#homepage-card-drag-btn") as HTMLElement;
     const contentArea = container.querySelector("#homepage-content") as HTMLElement;
-    if (!wrapper || !handle || !contentArea) return;
+    if (!wrapper || !contentArea) return;
 
     // center card on first render
     if (this.cardX < 0 || this.cardY < 0) {
       this.cardX = Math.max(0, (contentArea.offsetWidth - 820) / 2);
       this.cardY = Math.max(0, (contentArea.offsetHeight - 420) / 2);
     }
-    wrapper.style.left = this.cardX + "px";
-    wrapper.style.top = this.cardY + "px";
+    this.bindCardDrag(wrapper, contentArea, "#homepage-card-wrapper",
+      () => this.cardX, (v) => { this.cardX = v; },
+      () => this.cardY, (v) => { this.cardY = v; },
+    );
+  }
 
-    let startX = 0;
-    let startY = 0;
-    let origLeft = 0;
-    let origTop = 0;
+  private setupTimerDrag(container: HTMLElement) {
+    const wrapper = container.querySelector("#homepage-timer-wrapper") as HTMLElement;
+    const contentArea = container.querySelector("#homepage-content") as HTMLElement;
+    if (!wrapper || !contentArea) return;
 
-    handle.addEventListener("pointerdown", (e) => {
-      handle.setPointerCapture((e as PointerEvent).pointerId);
-      startX = e.clientX;
-      startY = e.clientY;
-      origLeft = wrapper.offsetLeft;
-      origTop = wrapper.offsetTop;
-      handle.style.cursor = "grabbing";
+    if (this.timerCardX < 0 || this.timerCardY < 0) {
+      this.timerCardX = Math.max(0, (contentArea.offsetWidth - 300) / 2 + 100);
+      this.timerCardY = Math.max(0, (contentArea.offsetHeight - 320) / 2 + 60);
+    }
+    this.bindCardDrag(wrapper, contentArea, "#homepage-timer-wrapper",
+      () => this.timerCardX, (v) => { this.timerCardX = v; },
+      () => this.timerCardY, (v) => { this.timerCardY = v; },
+    );
+  }
+
+  private bindCardDrag(
+    wrapper: HTMLElement, contentArea: HTMLElement, selector: string,
+    getX: () => number, setX: (v: number) => void,
+    getY: () => number, setY: (v: number) => void,
+  ) {
+    wrapper.style.left = getX() + "px";
+    wrapper.style.top = getY() + "px";
+
+    let startX = 0, startY = 0, origLeft = 0, origTop = 0;
+
+    wrapper.addEventListener("pointerdown", (e) => {
+      if (this.isInteractiveTarget(e.target as HTMLElement)) return;
+      wrapper.setPointerCapture((e as PointerEvent).pointerId);
+      wrapper.style.cursor = "grabbing";
+      startX = e.clientX; startY = e.clientY;
+      origLeft = wrapper.offsetLeft; origTop = wrapper.offsetTop;
     });
 
-    handle.addEventListener("pointermove", (e) => {
-      if (!handle.hasPointerCapture((e as PointerEvent).pointerId)) return;
-      const dx = e.clientX - startX;
-      const dy = e.clientY - startY;
+    wrapper.addEventListener("pointermove", (e) => {
+      if (!wrapper.hasPointerCapture((e as PointerEvent).pointerId)) return;
       const maxX = contentArea.offsetWidth - wrapper.offsetWidth;
-      const maxY = contentArea.offsetHeight - wrapper.offsetHeight;
-      this.cardX = Math.max(0, Math.min(origLeft + dx, maxX));
-      this.cardY = Math.max(0, Math.min(origTop + dy, maxY));
-      wrapper.style.left = this.cardX + "px";
-      wrapper.style.top = this.cardY + "px";
+      let nx = Math.max(0, Math.min(origLeft + e.clientX - startX, maxX));
+      let ny = Math.max(0, origTop + e.clientY - startY);
+      const c = this.constrainNoOverlap(nx, ny, wrapper.offsetWidth, wrapper.offsetHeight, this.getOtherCardBounds(selector));
+      setX(Math.max(0, Math.min(c.x, maxX)));
+      setY(Math.max(0, c.y));
+      wrapper.style.left = getX() + "px";
+      wrapper.style.top = getY() + "px";
+      this.expandContentHeight();
     });
 
-    handle.addEventListener("pointerup", () => {
-      handle.style.cursor = "grab";
+    wrapper.addEventListener("pointerup", () => { wrapper.style.cursor = ""; });
+  }
+
+  private expandContentHeight() {
+    const content = this.containerEl.querySelector("#homepage-content") as HTMLElement;
+    if (!content) return;
+    let maxBottom = content.clientHeight;
+    content.querySelectorAll('[id$="-wrapper"]').forEach(w => {
+      const el = w as HTMLElement;
+      if (el.style.display === "none") return;
+      maxBottom = Math.max(maxBottom, el.offsetTop + el.offsetHeight + 60);
+    });
+    content.style.minHeight = maxBottom + "px";
+  }
+
+  private getOtherCardBounds(excludeSelector: string): Array<{ x: number; y: number; w: number; h: number }> {
+    const content = this.containerEl.querySelector("#homepage-content") as HTMLElement;
+    if (!content) return [];
+    const wrappers = content.querySelectorAll('[id$="-wrapper"]');
+    const result: Array<{ x: number; y: number; w: number; h: number }> = [];
+    wrappers.forEach(w => {
+      const el = w as HTMLElement;
+      if (el.matches(excludeSelector)) return;
+      if (el.style.display === "none") return;
+      result.push({
+        x: el.offsetLeft,
+        y: el.offsetTop,
+        w: el.offsetWidth,
+        h: el.offsetHeight,
+      });
+    });
+    return result;
+  }
+
+  private constrainNoOverlap(
+    x: number, y: number, w: number, h: number,
+    others: Array<{ x: number; y: number; w: number; h: number }>,
+  ): { x: number; y: number } {
+    const GAP = 12;
+    let rx = x, ry = y;
+    for (const o of others) {
+      const ox = rx < o.x + o.w + GAP && rx + w + GAP > o.x;
+      const oy = ry < o.y + o.h + GAP && ry + h + GAP > o.y;
+      if (!ox || !oy) continue;
+      // push to nearest edge with gap
+      const pushRight = (o.x + o.w + GAP) - rx;
+      const pushLeft = (rx + w + GAP) - o.x;
+      const pushDown = (o.y + o.h + GAP) - ry;
+      const pushUp = (ry + h + GAP) - o.y;
+      if (Math.min(pushRight, pushLeft) < Math.min(pushDown, pushUp)) {
+        rx = pushRight < pushLeft ? o.x + o.w + GAP : o.x - w - GAP;
+      } else {
+        ry = pushDown < pushUp ? o.y + o.h + GAP : o.y - h - GAP;
+      }
+    }
+    return { x: rx, y: ry };
+  }
+
+  private timerOutsideClickHandler: ((e: Event) => void) | null = null;
+
+  private initTimerDisplay() {
+    // bind events once — only called from render() after DOM creation
+    this.updateTimerDisplay();
+
+    // time pickers: click label to toggle scroll, click item to select
+    this.containerEl.querySelectorAll(".timer-picker-wrap").forEach(wrap => {
+      const el = wrap as HTMLElement;
+      const field = el.dataset.field!;
+      const label = el.querySelector(".timer-picker-label") as HTMLElement;
+      const scroll = el.querySelector(".timer-picker-scroll") as HTMLElement;
+
+      const getVal = () => field === "h" ? this.timerHours : field === "m" ? this.timerMinutes : this.timerSeconds;
+      const max = field === "h" ? 99 : 59;
+
+      const isOpen = () => scroll.style.display !== "none";
+
+      const apply = (val: number) => {
+        const v = Math.max(0, Math.min(val, max));
+        if (field === "h") this.timerHours = v;
+        else if (field === "m") this.timerMinutes = v;
+        else this.timerSeconds = v;
+        this.timerRemaining = this.timerHours * 3600 + this.timerMinutes * 60 + this.timerSeconds;
+        label.textContent = String(v).padStart(2, "0");
+        this.updateTimerDisplay();
+      };
+
+      const closeAll = () => {
+        this.containerEl.querySelectorAll(".timer-picker-scroll").forEach(s => {
+          (s as HTMLElement).style.display = "none";
+        });
+        this.containerEl.querySelectorAll(".timer-picker-label").forEach(l => {
+          (l as HTMLElement).style.display = "flex";
+        });
+      };
+
+      const open = () => {
+        closeAll();
+        label.style.display = "none";
+        scroll.style.display = "block";
+        requestAnimationFrame(() => {
+          scroll.scrollTop = getVal() * 28;
+          this.updateScrollHighlight(scroll);
+        });
+      };
+
+      label.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (isOpen()) { closeAll(); } else { open(); }
+      });
+
+      scroll.querySelectorAll("div").forEach(item => {
+        item.addEventListener("click", (e) => {
+          e.stopPropagation();
+          apply(parseInt((item as HTMLElement).dataset.value!));
+          closeAll();
+        });
+      });
+    });
+
+    // remove previous outside-click handler before adding new one
+    if (this.timerOutsideClickHandler) {
+      this.containerEl.removeEventListener("click", this.timerOutsideClickHandler);
+    }
+    this.timerOutsideClickHandler = (e: Event) => {
+      const target = e.target as HTMLElement;
+      if (!target.closest(".timer-picker-wrap")) {
+        this.containerEl.querySelectorAll(".timer-picker-scroll").forEach(s => {
+          (s as HTMLElement).style.display = "none";
+        });
+        this.containerEl.querySelectorAll(".timer-picker-label").forEach(l => {
+          (l as HTMLElement).style.display = "flex";
+        });
+      }
+    };
+    this.containerEl.addEventListener("click", this.timerOutsideClickHandler);
+
+    // mode toggle
+    const modeToggle = this.containerEl.querySelector("#timer-mode-toggle");
+    modeToggle?.addEventListener("click", () => {
+      this.timerDisplayMode = this.timerDisplayMode === "clock" ? "digital" : "clock";
+      modeToggle.textContent = this.timerDisplayMode === "clock" ? "数字" : "表盘";
+      this.updateTimerDisplay();
+    });
+
+    // start / pause
+    const startBtn = this.containerEl.querySelector("#timer-start-btn");
+    startBtn?.addEventListener("click", () => {
+      if (this.timerFinished) this.timerFinished = false;
+      if (this.timerRunning) {
+        this.pauseTimer();
+      } else {
+        this.startTimer();
+      }
+    });
+
+    // reset
+    this.containerEl.querySelector("#timer-reset-btn")?.addEventListener("click", () => {
+      this.timerRunning = false;
+      if (this.timerIntervalId !== null) {
+        window.clearInterval(this.timerIntervalId);
+        this.timerIntervalId = null;
+      }
+      this.timerFinished = false;
+      this.timerRemaining = this.timerHours * 3600 + this.timerMinutes * 60 + this.timerSeconds;
+      this.updateTimerDisplay();
+      const startBtn = this.containerEl.querySelector("#timer-start-btn") as HTMLButtonElement;
+      if (startBtn) startBtn.textContent = "开始";
+      const resetBtn = this.containerEl.querySelector("#timer-reset-btn") as HTMLElement;
+      if (resetBtn) resetBtn.style.display = "none";
+      this.setPickersEditable(true);
+    });
+  }
+
+  private updateScrollHighlight(picker: HTMLElement) {
+    const idx = Math.round(picker.scrollTop / 28);
+    picker.querySelectorAll("div").forEach((d, i) => {
+      (d as HTMLElement).style.color = i === idx ? "var(--text-normal)" : "var(--text-muted)";
+      (d as HTMLElement).style.fontWeight = i === idx ? "600" : "400";
+    });
+  }
+
+  private getDisplayTime(): number {
+    const total = this.timerHours * 3600 + this.timerMinutes * 60 + this.timerSeconds;
+    // paused mid-countdown → show frozen remaining time
+    if (!this.timerRunning && this.timerRemaining > 0 && this.timerRemaining < total) {
+      return this.timerRemaining;
+    }
+    // running → show live remaining time
+    if (this.timerRunning) {
+      return this.timerRemaining;
+    }
+    // idle or finished → show selected time
+    return total;
+  }
+
+  private updateTimerDisplay() {
+    const display = this.containerEl.querySelector("#timer-display") as HTMLElement;
+    if (!display) return;
+
+    const t = this.getDisplayTime();
+    const maxTotal = this.timerHours * 3600 + this.timerMinutes * 60 + this.timerSeconds;
+    if (this.timerDisplayMode === "clock") {
+      display.innerHTML = this.renderClockFace(t, maxTotal);
+    } else {
+      display.innerHTML = this.renderDigitalDisplay(t, maxTotal);
+    }
+  }
+
+  private renderClockFace(total: number, maxTotal: number): string {
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const s = total % 60;
+    const fraction = maxTotal > 0 ? total / maxTotal : 0;
+
+    const size = 140;
+    const cx = size / 2;
+    const cy = size / 2;
+    const r = 56;
+
+    // minute hand angle (0-360 based on remaining minutes in current hour)
+    const minAngle = ((m * 60 + s) / 3600) * 360;
+    // second hand angle
+    const secAngle = (s / 60) * 360;
+
+    const minRad = (minAngle - 90) * Math.PI / 180;
+    const secRad = (secAngle - 90) * Math.PI / 180;
+    const minLen = r * 0.7;
+    const secLen = r * 0.85;
+
+    const minX = cx + minLen * Math.cos(minRad);
+    const minY = cy + minLen * Math.sin(minRad);
+    const secX = cx + secLen * Math.cos(secRad);
+    const secY = cy + secLen * Math.sin(secRad);
+
+    const circumference = 2 * Math.PI * r;
+
+    const timeStr = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+
+    return `
+      <svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
+        <circle cx="${cx}" cy="${cy}" r="${r}" fill="none"
+          stroke="var(--background-modifier-border)" stroke-width="4"/>
+        <circle cx="${cx}" cy="${cy}" r="${r}" fill="none"
+          stroke="var(--interactive-accent)" stroke-width="4"
+          stroke-dasharray="${circumference}"
+          stroke-dashoffset="${circumference * (1 - fraction)}"
+          transform="rotate(-90 ${cx} ${cy})"
+          style="transition: stroke-dashoffset 1s linear;"/>
+        ${[...Array(12)].map((_, i) => {
+          const a = (i * 30 - 90) * Math.PI / 180;
+          const x1 = cx + (r - 7) * Math.cos(a);
+          const y1 = cy + (r - 7) * Math.sin(a);
+          const x2 = cx + (r - 3) * Math.cos(a);
+          const y2 = cy + (r - 3) * Math.sin(a);
+          return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="var(--text-muted)" stroke-width="1.5" stroke-linecap="round"/>`;
+        }).join("")}
+        <line x1="${cx}" y1="${cy}" x2="${minX}" y2="${minY}" stroke="var(--text-normal)" stroke-width="2" stroke-linecap="round"/>
+        <line x1="${cx}" y1="${cy}" x2="${secX}" y2="${secY}" stroke="var(--interactive-accent)" stroke-width="1" stroke-linecap="round"/>
+        <circle cx="${cx}" cy="${cy}" r="2.5" fill="var(--text-normal)"/>
+      </svg>
+      <div style="
+        position: absolute;
+        text-align: center;
+        font-size: 11px;
+        color: var(--text-muted);
+        margin-top: 4px;
+        font-variant-numeric: tabular-nums;
+      ">${timeStr}</div>
+    `;
+  }
+
+  private renderDigitalDisplay(total: number, maxTotal: number): string {
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const s = total % 60;
+    const timeStr = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+
+    const fraction = maxTotal > 0 ? total / maxTotal : 0;
+
+    return `
+      <div style="display: flex; flex-direction: column; align-items: center; gap: 6px;">
+        <span style="
+          font-size: 36px;
+          font-weight: 300;
+          font-variant-numeric: tabular-nums;
+          color: ${this.timerFinished ? "var(--interactive-accent)" : "var(--text-normal)"};
+          letter-spacing: 2px;
+        ">${timeStr}</span>
+        <div style="
+          width: 120px; height: 3px; border-radius: 2px;
+          background: var(--background-modifier-border);
+          overflow: hidden;
+        ">
+          <div style="
+            width: ${fraction * 100}%; height: 100%; border-radius: 2px;
+            background: var(--interactive-accent);
+            transition: width 1s linear;
+          "></div>
+        </div>
+      </div>
+    `;
+  }
+
+  private renderTimerPicker(field: string, label: string, max: number, cur: number): string {
+    const count = max;
+    return `
+      <div class="timer-picker-wrap" data-field="${field}" style="position: relative; width: 44px; height: 38px;">
+        <div class="timer-picker-label" style="
+          width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;
+          font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums;
+          color: var(--text-normal);
+          border: 1px solid var(--background-modifier-border); border-radius: 6px;
+          background: var(--background-modifier-hover);
+          cursor: pointer; user-select: none;
+        ">${String(cur).padStart(2, "0")}</div>
+        <div class="timer-picker-scroll" style="
+          display: none; position: absolute; top: 0; left: 0;
+          width: 100%; height: 84px; overflow-y: auto;
+          scroll-snap-type: y mandatory;
+          border: 1px solid var(--interactive-accent);
+          border-radius: 6px;
+          background: var(--background-modifier-hover);
+          scrollbar-width: none;
+          z-index: 1;
+        ">${Array.from({length: count}, (_, i) => `
+          <div data-value="${i}" style="
+            height: 28px; display: flex; align-items: center; justify-content: center;
+            font-size: 14px; font-variant-numeric: tabular-nums;
+            color: var(--text-muted);
+            scroll-snap-align: center;
+            cursor: pointer;
+            user-select: none;
+          ">${String(i).padStart(2, "0")}</div>
+        `).join("")}</div>
+      </div>
+      <span style="font-size: 12px; color: var(--text-muted);">${label}</span>
+    `;
+  }
+
+  private setPickersEditable(editable: boolean) {
+    this.containerEl.querySelectorAll(".timer-picker-label").forEach(l => {
+      const el = l as HTMLElement;
+      if (editable) {
+        el.style.border = "1px solid var(--background-modifier-border)";
+        el.style.background = "var(--background-modifier-hover)";
+        el.style.cursor = "pointer";
+        el.style.pointerEvents = "auto";
+      } else {
+        el.style.border = "1px solid transparent";
+        el.style.background = "transparent";
+        el.style.cursor = "default";
+        el.style.pointerEvents = "none";
+      }
+    });
+  }
+
+  private updatePickerTexts() {
+    this.containerEl.querySelectorAll(".timer-picker-wrap").forEach(wrap => {
+      const el = wrap as HTMLElement;
+      const field = el.dataset.field!;
+      const label = el.querySelector(".timer-picker-label") as HTMLElement;
+      if (!label) return;
+      const val = field === "h" ? this.timerHours : field === "m" ? this.timerMinutes : this.timerSeconds;
+      label.textContent = String(val).padStart(2, "0");
+    });
+  }
+
+  private startTimer() {
+    // always recalculate from current field values
+    this.timerRemaining = this.timerHours * 3600 + this.timerMinutes * 60 + this.timerSeconds;
+    if (this.timerRemaining <= 0) return;
+
+    this.timerRunning = true;
+    if (this.timerIntervalId !== null) {
+      window.clearInterval(this.timerIntervalId);
+    }
+    this.timerIntervalId = window.setInterval(() => this.timerTick(), 1000);
+    const startBtn = this.containerEl.querySelector("#timer-start-btn") as HTMLButtonElement;
+    if (startBtn) startBtn.textContent = "暂停";
+    const resetBtn = this.containerEl.querySelector("#timer-reset-btn") as HTMLElement;
+    if (resetBtn) resetBtn.style.display = "none";
+    this.updatePickerTexts();
+    this.setPickersEditable(false);
+  }
+
+  private pauseTimer() {
+    this.timerRunning = false;
+    if (this.timerIntervalId !== null) {
+      window.clearInterval(this.timerIntervalId);
+      this.timerIntervalId = null;
+    }
+    const startBtn = this.containerEl.querySelector("#timer-start-btn") as HTMLButtonElement;
+    if (startBtn) startBtn.textContent = "开始";
+    const resetBtn = this.containerEl.querySelector("#timer-reset-btn") as HTMLElement;
+    if (resetBtn) resetBtn.style.display = "inline-block";
+    this.setPickersEditable(true);
+  }
+
+  private timerTick() {
+    if (this.timerRemaining <= 0) {
+      this.pauseTimer();
+      this.timerFinished = true;
+      this.updateTimerDisplay();
+      this.showTimerNotification();
+      return;
+    }
+    this.timerRemaining--;
+    this.updateTimerDisplay();
+  }
+
+  private showTimerNotification() {
+    // remove existing notification if any
+    const existing = this.containerEl.querySelector("#timer-notification");
+    if (existing) existing.remove();
+
+    const content = this.containerEl.querySelector("#homepage-content") as HTMLElement;
+    if (!content) return;
+
+    const overlay = document.createElement("div");
+    overlay.id = "timer-notification";
+    overlay.style.cssText = `
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.4);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 20;
+    `;
+
+    overlay.innerHTML = `
+      <div style="
+        background: var(--background-primary);
+        border-radius: 14px;
+        padding: 32px 40px;
+        text-align: center;
+        box-shadow: 0 8px 32px rgba(0,0,0,0.2), 0 0 0 1px var(--background-modifier-border);
+      ">
+        <div style="font-size: 48px; margin-bottom: 8px;">⏰</div>
+        <div style="font-size: 18px; font-weight: 600; color: var(--text-normal); margin-bottom: 6px;">时间到！</div>
+        <div style="font-size: 13px; color: var(--text-muted); margin-bottom: 20px;">
+          计时器已结束（${this.timerHours}时${this.timerMinutes}分${this.timerSeconds}秒）
+        </div>
+        <button id="timer-dismiss-btn" style="
+          padding: 6px 24px; font-size: 13px; border: none; border-radius: 6px;
+          background: var(--interactive-accent); color: var(--text-on-accent);
+          cursor: pointer; font-family: inherit;
+        ">关闭</button>
+      </div>
+    `;
+
+    content.appendChild(overlay);
+
+    const dismiss = () => {
+      overlay.remove();
+      this.timerRemaining = this.timerHours * 3600 + this.timerMinutes * 60 + this.timerSeconds;
+      this.timerFinished = false;
+      this.updateTimerDisplay();
+      const resetBtn = this.containerEl.querySelector("#timer-reset-btn") as HTMLElement;
+      if (resetBtn) resetBtn.style.display = "none";
+      this.setPickersEditable(true);
+    };
+
+    overlay.querySelector("#timer-dismiss-btn")?.addEventListener("click", dismiss);
+
+    overlay.addEventListener("click", (e) => {
+      if (e.target === overlay) dismiss();
     });
   }
 
@@ -597,6 +1168,7 @@ class HomepageView extends ItemView {
   private componentIcon(id: string): string {
     const icons: Record<string, string> = {
       schedule: `<svg width="28" height="28" viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.7"><rect x="4" y="5" width="20" height="19" rx="2"/><line x1="4" y1="11" x2="24" y2="11"/><line x1="9" y1="2" x2="9" y2="7"/><line x1="19" y1="2" x2="19" y2="7"/><line x1="10" y1="15" x2="18" y2="15"/><line x1="12" y1="19" x2="16" y2="19"/></svg>`,
+      timer: `<svg width="28" height="28" viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.7"><circle cx="14" cy="15" r="9"/><line x1="14" y1="15" x2="14" y2="9"/><line x1="14" y1="15" x2="17" y2="15"/><line x1="11" y1="3" x2="17" y2="3"/><line x1="14" y1="3" x2="14" y2="6"/></svg>`,
     };
     return icons[id] || `<svg width="28" height="28" viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.7"><rect x="4" y="4" width="20" height="20" rx="3"/></svg>`;
   }
