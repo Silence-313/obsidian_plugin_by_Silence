@@ -20,10 +20,18 @@ interface ComponentInfo {
   added: boolean;
 }
 
+interface CardLayout {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 interface HomepageSettings {
   userName: string;
   todos: TodoItem[];
   components: ComponentInfo[];
+  cardLayouts: Record<string, CardLayout>;
 }
 
 const DEFAULT_COMPONENTS: ComponentInfo[] = [
@@ -35,6 +43,7 @@ const DEFAULT_SETTINGS: HomepageSettings = {
   userName: "",
   todos: [],
   components: DEFAULT_COMPONENTS,
+  cardLayouts: {},
 };
 
 const TODO_COLORS = [
@@ -229,10 +238,6 @@ class HomepageView extends ItemView {
   private calendarYear: number;
   private calendarMonth: number;
   private selectedDate: string;
-  private cardX = -1;
-  private cardY = -1;
-  private timerCardX = -1;
-  private timerCardY = -1;
   private timerHours = 0;
   private timerMinutes = 5;
   private timerSeconds = 0;
@@ -241,6 +246,7 @@ class HomepageView extends ItemView {
   private timerFinished = false;
   private timerDisplayMode: "clock" | "digital" = "clock";
   private timerIntervalId: number | null = null;
+  private cardResizeObserver: ResizeObserver | null = null;
 
   constructor(leaf: WorkspaceLeaf, plugin: HomepagePlugin) {
     super(leaf);
@@ -277,6 +283,19 @@ class HomepageView extends ItemView {
       window.clearInterval(this.timerIntervalId);
       this.timerIntervalId = null;
     }
+    if (this.cardResizeObserver) {
+      this.cardResizeObserver.disconnect();
+      this.cardResizeObserver = null;
+    }
+  }
+
+  private getCardLayout(id: string): CardLayout {
+    return this.plugin.settings.cardLayouts[id] || { x: -1, y: -1, width: 0, height: 0 };
+  }
+
+  private saveCardLayout(id: string, x: number, y: number, width: number, height: number) {
+    this.plugin.settings.cardLayouts[id] = { x, y, width, height };
+    this.plugin.saveSettings();
   }
 
   private isComponentAdded(id: string): boolean {
@@ -361,7 +380,7 @@ class HomepageView extends ItemView {
         overflow-y: auto;
         overflow-x: hidden;
       ">
-        <div id="homepage-card-wrapper" style="
+        <div id="homepage-card-wrapper" data-component-id="schedule" style="
           position: absolute;
           resize: both;
           overflow: hidden;
@@ -407,7 +426,7 @@ class HomepageView extends ItemView {
             "></div>
           </div>
         </div>
-        <div id="homepage-timer-wrapper" style="
+        <div id="homepage-timer-wrapper" data-component-id="timer" style="
           position: absolute;
           resize: both;
           overflow: hidden;
@@ -497,14 +516,15 @@ class HomepageView extends ItemView {
       this.renderStats();
       this.renderCalendar();
       this.renderTodo();
-      this.setupCardDrag(container);
+      this.setupCardPosition(container, "schedule", "#homepage-card-wrapper");
     }
 
     if (this.isComponentAdded("timer")) {
       this.initTimerDisplay();
-      this.setupTimerDrag(container);
+      this.setupCardPosition(container, "timer", "#homepage-timer-wrapper");
     }
 
+    this.observeCardResizes();
     this.expandContentHeight();
 
     const input = container.querySelector("#homepage-name-input") as HTMLInputElement;
@@ -540,48 +560,39 @@ class HomepageView extends ItemView {
     return false;
   }
 
-  private setupCardDrag(container: HTMLElement) {
-    const wrapper = container.querySelector("#homepage-card-wrapper") as HTMLElement;
+  private setupCardPosition(container: HTMLElement, componentId: string, wrapperSelector: string) {
+    const wrapper = container.querySelector(wrapperSelector) as HTMLElement;
     const contentArea = container.querySelector("#homepage-content") as HTMLElement;
     if (!wrapper || !contentArea) return;
 
-    // center card on first render
-    if (this.cardX < 0 || this.cardY < 0) {
-      this.cardX = Math.max(0, (contentArea.offsetWidth - 820) / 2);
-      this.cardY = Math.max(0, (contentArea.offsetHeight - 420) / 2);
+    const layout = this.getCardLayout(componentId);
+    const defaultW = wrapper.offsetWidth;
+    const defaultH = wrapper.offsetHeight;
+
+    if (layout.width > 0) {
+      wrapper.style.width = layout.width + "px";
+      wrapper.style.height = layout.height + "px";
     }
-    this.bindCardDrag(wrapper, contentArea, "#homepage-card-wrapper",
-      () => this.cardX, (v) => { this.cardX = v; },
-      () => this.cardY, (v) => { this.cardY = v; },
-    );
-  }
 
-  private setupTimerDrag(container: HTMLElement) {
-    const wrapper = container.querySelector("#homepage-timer-wrapper") as HTMLElement;
-    const contentArea = container.querySelector("#homepage-content") as HTMLElement;
-    if (!wrapper || !contentArea) return;
+    const w = layout.width > 0 ? layout.width : defaultW;
+    const h = layout.height > 0 ? layout.height : defaultH;
 
-    if (this.timerCardX < 0 || this.timerCardY < 0) {
-      this.timerCardX = Math.max(0, (contentArea.offsetWidth - 300) / 2 + 100);
-      this.timerCardY = Math.max(0, (contentArea.offsetHeight - 320) / 2 + 60);
-    }
-    this.bindCardDrag(wrapper, contentArea, "#homepage-timer-wrapper",
-      () => this.timerCardX, (v) => { this.timerCardX = v; },
-      () => this.timerCardY, (v) => { this.timerCardY = v; },
-    );
-  }
-
-  private bindCardDrag(
-    wrapper: HTMLElement, contentArea: HTMLElement, selector: string,
-    getX: () => number, setX: (v: number) => void,
-    getY: () => number, setY: (v: number) => void,
-  ) {
-    wrapper.style.left = getX() + "px";
-    wrapper.style.top = getY() + "px";
+    let posX = layout.x >= 0 ? layout.x : Math.max(0, (contentArea.offsetWidth - w) / 2);
+    let posY = layout.y >= 0 ? layout.y : Math.max(0, (contentArea.offsetHeight - h) / 2);
+    wrapper.style.left = posX + "px";
+    wrapper.style.top = posY + "px";
 
     let startX = 0, startY = 0, origLeft = 0, origTop = 0;
+    let isResizing = false;
 
     wrapper.addEventListener("pointerdown", (e) => {
+      // detect click on the native resize handle (bottom-right ~20px corner)
+      const rect = wrapper.getBoundingClientRect();
+      if (e.clientX > rect.right - 20 && e.clientY > rect.bottom - 20) {
+        isResizing = true;
+        return; // let browser handle resize natively, skip drag
+      }
+      isResizing = false;
       if (this.isInteractiveTarget(e.target as HTMLElement)) return;
       wrapper.setPointerCapture((e as PointerEvent).pointerId);
       wrapper.style.cursor = "grabbing";
@@ -594,15 +605,45 @@ class HomepageView extends ItemView {
       const maxX = contentArea.offsetWidth - wrapper.offsetWidth;
       let nx = Math.max(0, Math.min(origLeft + e.clientX - startX, maxX));
       let ny = Math.max(0, origTop + e.clientY - startY);
-      const c = this.constrainNoOverlap(nx, ny, wrapper.offsetWidth, wrapper.offsetHeight, this.getOtherCardBounds(selector));
-      setX(Math.max(0, Math.min(c.x, maxX)));
-      setY(Math.max(0, c.y));
-      wrapper.style.left = getX() + "px";
-      wrapper.style.top = getY() + "px";
+      const c = this.constrainNoOverlap(nx, ny, wrapper.offsetWidth, wrapper.offsetHeight, this.getOtherCardBounds(wrapperSelector));
+      posX = Math.max(0, Math.min(c.x, maxX));
+      posY = Math.max(0, c.y);
+      wrapper.style.left = posX + "px";
+      wrapper.style.top = posY + "px";
       this.expandContentHeight();
     });
 
-    wrapper.addEventListener("pointerup", () => { wrapper.style.cursor = ""; });
+    wrapper.addEventListener("pointerup", () => {
+      wrapper.style.cursor = "";
+      if (isResizing) {
+        // restore position — browser may have shifted it during native resize
+        const pre = this.plugin.settings.cardLayouts[componentId];
+        if (pre) {
+          wrapper.style.left = pre.x + "px";
+          wrapper.style.top = pre.y + "px";
+          this.saveCardLayout(componentId, pre.x, pre.y, wrapper.offsetWidth, wrapper.offsetHeight);
+        }
+      } else {
+        this.saveCardLayout(componentId, posX, posY, wrapper.offsetWidth, wrapper.offsetHeight);
+      }
+    });
+  }
+
+  private observeCardResizes() {
+    if (this.cardResizeObserver) this.cardResizeObserver.disconnect();
+    this.cardResizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const el = entry.target as HTMLElement;
+        const id = el.dataset.componentId;
+        if (!id) continue;
+        const prev = this.plugin.settings.cardLayouts[id];
+        if (!prev) continue;
+        this.saveCardLayout(id, prev.x, prev.y, entry.contentRect.width, entry.contentRect.height);
+      }
+    });
+    this.containerEl.querySelectorAll('[id$="-wrapper"]').forEach(w => {
+      this.cardResizeObserver!.observe(w as HTMLElement);
+    });
   }
 
   private expandContentHeight() {
