@@ -1,4 +1,4 @@
-import { App, Plugin, PluginSettingTab, Setting, ItemView, WorkspaceLeaf, Modal } from "obsidian";
+import { App, Plugin, PluginSettingTab, Setting, ItemView, WorkspaceLeaf, Modal, FileSystemAdapter } from "obsidian";
 
 const VIEW_TYPE_HOMEPAGE = "homepage-view";
 
@@ -32,11 +32,14 @@ interface HomepageSettings {
   todos: TodoItem[];
   components: ComponentInfo[];
   cardLayouts: Record<string, CardLayout>;
+  desktopFolders: string[];
+  desktopNames: string[];
 }
 
 const DEFAULT_COMPONENTS: ComponentInfo[] = [
   { id: "schedule", name: "日程中心", added: true },
   { id: "timer", name: "计时器", added: false },
+  { id: "desktop", name: "超级桌面", added: false },
 ];
 
 const DEFAULT_SETTINGS: HomepageSettings = {
@@ -44,6 +47,8 @@ const DEFAULT_SETTINGS: HomepageSettings = {
   todos: [],
   components: DEFAULT_COMPONENTS,
   cardLayouts: {},
+  desktopFolders: [""],
+  desktopNames: [""],
 };
 
 const TODO_COLORS = [
@@ -232,6 +237,91 @@ class TodoAddModal extends Modal {
   }
 }
 
+class DesktopFolderModal extends Modal {
+  private onSubmit: (path: string) => void;
+  private currentPath: string;
+
+  constructor(app: App, currentPath: string, onSubmit: (path: string) => void) {
+    super(app);
+    this.currentPath = currentPath;
+    this.onSubmit = onSubmit;
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+
+    contentEl.createEl("h3", { text: "设置桌面文件夹" });
+
+    contentEl.createEl("div", {
+      text: "输入 vault 内的文件夹路径（相对于 vault 根目录），留空表示显示整个 vault 根目录。",
+    }, (el) => {
+      el.style.cssText = "font-size: 13px; color: var(--text-muted); margin-bottom: 12px;";
+    });
+
+    const input = contentEl.createEl("input", {
+      type: "text",
+      placeholder: "例如：文档/项目（留空 = vault 根目录）",
+      value: this.currentPath,
+    });
+    input.style.cssText = `
+      width: 100%;
+      padding: 8px 12px;
+      font-size: 14px;
+      border: 1px solid var(--background-modifier-border);
+      border-radius: 6px;
+      background: var(--background-modifier-hover);
+      color: var(--text-normal);
+      outline: none;
+      font-family: inherit;
+      margin-bottom: 16px;
+      box-sizing: border-box;
+    `;
+    input.addEventListener("keydown", (e) => {
+      if ((e as KeyboardEvent).key === "Enter") this.confirm(input.value.trim());
+      if ((e as KeyboardEvent).key === "Escape") this.close();
+    });
+    input.focus();
+
+    const btnRow = contentEl.createEl("div");
+    btnRow.style.cssText = "display: flex; justify-content: flex-end; gap: 8px;";
+
+    const cancelBtn = btnRow.createEl("button", { text: "取消" });
+    cancelBtn.style.cssText = `
+      padding: 6px 16px;
+      font-size: 14px;
+      border: 1px solid var(--background-modifier-border);
+      border-radius: 4px;
+      background: transparent;
+      color: var(--text-muted);
+      cursor: pointer;
+    `;
+    cancelBtn.addEventListener("click", () => this.close());
+
+    const confirmBtn = btnRow.createEl("button", { text: "确定" });
+    confirmBtn.style.cssText = `
+      padding: 6px 16px;
+      font-size: 14px;
+      border: none;
+      border-radius: 4px;
+      background: var(--interactive-accent);
+      color: var(--text-on-accent);
+      cursor: pointer;
+    `;
+    confirmBtn.addEventListener("click", () => this.confirm(input.value.trim()));
+  }
+
+  private confirm(path: string) {
+    const normalized = path.replace(/^\/+|\/+$/g, "");
+    this.onSubmit(normalized);
+    this.close();
+  }
+
+  onClose() {
+    this.contentEl.empty();
+  }
+}
+
 class HomepageView extends ItemView {
   plugin: HomepagePlugin;
   private intervalId: number | null = null;
@@ -247,6 +337,7 @@ class HomepageView extends ItemView {
   private timerDisplayMode: "clock" | "digital" = "clock";
   private timerIntervalId: number | null = null;
   private cardResizeObserver: ResizeObserver | null = null;
+  private desktopCurrentPaths: string[] = [];
 
   constructor(leaf: WorkspaceLeaf, plugin: HomepagePlugin) {
     super(leaf);
@@ -375,7 +466,6 @@ class HomepageView extends ItemView {
       </div>
       <div id="homepage-content" style="
         flex: 1;
-        min-height: 100%;
         position: relative;
         overflow-y: auto;
         overflow-x: hidden;
@@ -492,22 +582,146 @@ class HomepageView extends ItemView {
             </div>
           </div>
         </div>
-        <div id="homepage-sidebar" style="
-          position: absolute;
-          top: 0;
-          right: 0;
-          bottom: 0;
-          width: 28px;
-          min-width: 28px;
-          border-left: 1px solid var(--background-modifier-border);
-          display: flex;
-          flex-direction: column;
-          transition: width 0.25s ease, min-width 0.25s ease;
-          overflow: hidden;
-          z-index: 10;
-          background: var(--background-primary);
-        "></div>
+        <div id="homepage-desktop-container" style="display: ${this.isComponentAdded("desktop") ? "contents" : "none"};">
+          ${this.plugin.settings.desktopFolders.map((_folder, i) => `
+          <div id="homepage-desktop-wrapper-${i}" data-component-id="desktop-${i}" style="
+            position: absolute;
+            resize: both;
+            overflow: hidden;
+            width: 640px;
+            height: 440px;
+            min-width: 320px;
+            min-height: 240px;
+            max-width: 100%;
+            border-radius: 14px;
+            box-shadow: 0 4px 24px rgba(0,0,0,0.12), 0 0 0 1px var(--background-modifier-border);
+          ">
+            <div style="
+              display: flex;
+              flex-direction: column;
+              width: 100%;
+              height: 100%;
+              background: var(--background-primary);
+              overflow: hidden;
+              border-radius: 14px;
+              position: relative;
+            ">
+              <div style="
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                padding: 8px 12px;
+                border-bottom: 1px solid var(--background-modifier-border);
+                gap: 8px;
+              ">
+                <span style="font-size: 13px; font-weight: 600; color: var(--text-normal); white-space: nowrap;">🖥</span>
+                <input
+                  id="desktop-name-input-${i}"
+                  type="text"
+                  placeholder="超级桌面 ${i + 1}"
+                  value="${this.escapeHtml(this.plugin.settings.desktopNames[i] ?? "")}"
+                  style="
+                    font-size: 13px;
+                    font-weight: 600;
+                    color: var(--text-normal);
+                    background: transparent;
+                    border: 1px solid transparent;
+                    border-radius: 4px;
+                    padding: 1px 4px;
+                    outline: none;
+                    width: 80px;
+                    font-family: inherit;
+                    transition: border-color 0.15s, background 0.15s;
+                  "
+                  onfocus="this.style.borderColor='var(--interactive-accent)';this.style.background='var(--background-modifier-hover)'"
+                  onblur="this.style.borderColor='transparent';this.style.background='transparent'"
+                />
+                <div style="display: flex; align-items: center; gap: 4px; min-width: 0;">
+                  <button id="desktop-back-btn-${i}" style="
+                    display: none;
+                    background: transparent;
+                    border: 1px solid var(--background-modifier-border);
+                    border-radius: 4px;
+                    color: var(--text-muted);
+                    cursor: pointer;
+                    font-size: 11px;
+                    padding: 2px 6px;
+                    font-family: inherit;
+                    white-space: nowrap;
+                  ">← 返回</button>
+                  <span id="desktop-path-display-${i}" style="
+                    font-size: 11px;
+                    color: var(--text-faint);
+                    overflow: hidden;
+                    text-overflow: ellipsis;
+                    white-space: nowrap;
+                    max-width: 140px;
+                  ">/</span>
+                  <button id="desktop-folder-btn-${i}" style="
+                    background: transparent;
+                    border: 1px solid var(--background-modifier-border);
+                    border-radius: 4px;
+                    color: var(--text-muted);
+                    cursor: pointer;
+                    font-size: 11px;
+                    padding: 2px 6px;
+                    font-family: inherit;
+                    white-space: nowrap;
+                  ">⚙ 设置</button>
+                  <button id="desktop-add-btn-${i}" style="
+                    background: transparent;
+                    border: 1px solid var(--background-modifier-border);
+                    border-radius: 4px;
+                    color: var(--text-muted);
+                    cursor: pointer;
+                    font-size: 14px;
+                    padding: 0px 6px;
+                    font-family: inherit;
+                    line-height: 1.6;
+                  " title="添加一个桌面">+</button>
+                  <button id="desktop-close-btn-${i}" style="
+                    background: transparent;
+                    border: 1px solid var(--background-modifier-border);
+                    border-radius: 4px;
+                    color: var(--text-muted);
+                    cursor: pointer;
+                    font-size: 14px;
+                    padding: 0px 6px;
+                    font-family: inherit;
+                    line-height: 1.6;
+                    display: ${this.plugin.settings.desktopFolders.length > 1 ? "inline-block" : "none"};
+                  " title="删除此桌面">×</button>
+                </div>
+              </div>
+              <div id="desktop-grid-${i}" style="
+                flex: 1;
+                display: grid;
+                grid-template-columns: repeat(auto-fill, minmax(88px, 1fr));
+                gap: 6px;
+                padding: 10px 12px;
+                overflow-y: auto;
+                align-content: start;
+              "></div>
+            </div>
+          </div>
+          `).join("")}
+        </div>
       </div>
+      <div id="homepage-sidebar" style="
+        position: absolute;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        width: 28px;
+        min-width: 28px;
+        border-left: 1px solid var(--background-modifier-border);
+        display: flex;
+        flex-direction: column;
+        transition: width 0.25s ease, min-width 0.25s ease;
+        overflow: hidden;
+        z-index: 10;
+        background: var(--background-primary);
+      "></div>
     `;
 
     this.renderSidebar();
@@ -522,6 +736,14 @@ class HomepageView extends ItemView {
     if (this.isComponentAdded("timer")) {
       this.initTimerDisplay();
       this.setupCardPosition(container, "timer", "#homepage-timer-wrapper");
+    }
+
+    if (this.isComponentAdded("desktop")) {
+      this.desktopCurrentPaths = this.plugin.settings.desktopFolders.map(f => f);
+      for (let i = 0; i < this.plugin.settings.desktopFolders.length; i++) {
+        this.initDesktopDisplay(i);
+        this.setupCardPosition(container, `desktop-${i}`, `#homepage-desktop-wrapper-${i}`);
+      }
     }
 
     this.observeCardResizes();
@@ -557,6 +779,7 @@ class HomepageView extends ItemView {
     if (target.closest("button, input, select, textarea")) return true;
     if (target.closest(".calendar-day, .todo-check, .todo-delete, .todo-filter-chip, .yesterday-sync-one, .yesterday-sync-all")) return true;
     if (target.closest(".timer-picker-wrap")) return true;
+    if (target.closest(".desktop-item")) return true;
     return false;
   }
 
@@ -1113,6 +1336,253 @@ class HomepageView extends ItemView {
     });
   }
 
+  // ── 超级桌面 ──────────────────────────────────────────
+
+  private getFileIcon(filename: string): string {
+    const ext = filename.split(".").pop()?.toLowerCase() || "";
+    const map: Record<string, string> = {
+      pdf: "📕", doc: "📘", docx: "📘",
+      xls: "📗", xlsx: "📗", ppt: "📙", pptx: "📙",
+      jpg: "🖼", jpeg: "🖼", png: "🖼", gif: "🖼",
+      svg: "🖼", webp: "🖼",
+      mp3: "🎵", wav: "🎵", flac: "🎵", aac: "🎵",
+      mp4: "🎬", avi: "🎬", mkv: "🎬", mov: "🎬",
+      zip: "📦", rar: "📦", "7z": "📦", tar: "📦", gz: "📦",
+      md: "📝", txt: "📝",
+      js: "💛", ts: "💙", jsx: "💛", tsx: "💙",
+      py: "🐍", html: "🌐", css: "🎨", json: "📋",
+      canvas: "🗺",
+    };
+    return map[ext] || "📄";
+  }
+
+  private renderDesktopItem(name: string, type: "file" | "folder"): string {
+    const icon = type === "folder" ? "📁" : this.getFileIcon(name);
+    return `
+      <div class="desktop-item" data-path="${this.escapeHtml(name)}" data-type="${type}" style="
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 4px;
+        cursor: pointer;
+        padding: 6px 4px;
+        border-radius: 8px;
+        user-select: none;
+        transition: background 0.1s;
+      " onmouseenter="this.style.background='var(--background-modifier-hover)'" onmouseleave="this.style.background='transparent'">
+        <div style="font-size: 32px; line-height: 1; pointer-events: none;">${icon}</div>
+        <span style="
+          font-size: 10px;
+          color: var(--text-normal);
+          text-align: center;
+          word-break: break-word;
+          line-height: 1.3;
+          max-width: 80px;
+          overflow: hidden;
+          display: -webkit-box;
+          -webkit-line-clamp: 2;
+          -webkit-box-orient: vertical;
+          pointer-events: none;
+        ">${this.escapeHtml(name)}</span>
+      </div>
+    `;
+  }
+
+  private async renderDesktopContents(i: number) {
+    const grid = this.containerEl.querySelector(`#desktop-grid-${i}`) as HTMLElement;
+    const pathDisplay = this.containerEl.querySelector(`#desktop-path-display-${i}`) as HTMLElement;
+    const backBtn = this.containerEl.querySelector(`#desktop-back-btn-${i}`) as HTMLElement;
+    if (!grid) return;
+
+    const cur = this.desktopCurrentPaths[i] ?? "";
+    const root = this.plugin.settings.desktopFolders[i] ?? "";
+    if (pathDisplay) pathDisplay.textContent = cur || "/";
+    if (backBtn) {
+      backBtn.style.display = cur !== root ? "inline-block" : "none";
+    }
+
+    grid.innerHTML = `
+      <div style="
+        grid-column: 1 / -1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: 100px;
+        color: var(--text-muted);
+        font-size: 13px;
+      ">加载中...</div>
+    `;
+
+    try {
+      const result = await this.app.vault.adapter.list(cur);
+      const folders = [...result.folders].sort((a, b) => a.localeCompare(b));
+      const files = [...result.files].sort((a, b) => a.localeCompare(b));
+
+      if (folders.length === 0 && files.length === 0) {
+        grid.innerHTML = `
+          <div style="
+            grid-column: 1 / -1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100px;
+            color: var(--text-faint);
+            font-size: 13px;
+            gap: 6px;
+          ">
+            <span style="font-size: 36px; opacity: 0.5;">📂</span>
+            <span>该文件夹为空</span>
+          </div>
+        `;
+        return;
+      }
+
+      grid.innerHTML =
+        folders.map((f) => this.renderDesktopItem(f, "folder")).join("") +
+        files.map((f) => this.renderDesktopItem(f, "file")).join("");
+    } catch {
+      grid.innerHTML = `
+        <div style="
+          grid-column: 1 / -1;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          height: 100px;
+          color: var(--text-error);
+          font-size: 13px;
+          gap: 6px;
+        ">
+          <span style="font-size: 36px; opacity: 0.5;">⚠️</span>
+          <span>无法访问该文件夹</span>
+        </div>
+      `;
+    }
+  }
+
+  private openDesktopFile(i: number, filename: string) {
+    const cur = this.desktopCurrentPaths[i] ?? "";
+    const relativePath = cur ? `${cur}/${filename}` : filename;
+    if (filename.endsWith(".md")) {
+      this.app.workspace.openLinkText(relativePath, "", false);
+      return;
+    }
+    try {
+      const adapter = this.app.vault.adapter as FileSystemAdapter;
+      const basePath = adapter.getBasePath();
+      const absolutePath = `${basePath}/${relativePath}`;
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { shell } = require("electron");
+      shell.openPath(absolutePath);
+    } catch {
+      // silently fail on non-desktop platforms
+    }
+  }
+
+  private navigateToDesktopFolder(i: number, subfolder: string) {
+    const cur = this.desktopCurrentPaths[i] ?? "";
+    this.desktopCurrentPaths[i] = cur ? `${cur}/${subfolder}` : subfolder;
+    this.renderDesktopContents(i);
+  }
+
+  private navigateDesktopBack(i: number) {
+    const cur = this.desktopCurrentPaths[i] ?? "";
+    const root = this.plugin.settings.desktopFolders[i] ?? "";
+    if (cur === root) return;
+    const parts = cur.split("/");
+    parts.pop();
+    const parent = parts.join("/");
+    if (root && !parent.startsWith(root)) {
+      this.desktopCurrentPaths[i] = root;
+    } else {
+      this.desktopCurrentPaths[i] = parent;
+    }
+    this.renderDesktopContents(i);
+  }
+
+  private openDesktopFolderPicker(i: number) {
+    const root = this.plugin.settings.desktopFolders[i] ?? "";
+    new DesktopFolderModal(this.app, root, (newPath) => {
+      this.plugin.settings.desktopFolders[i] = newPath;
+      this.plugin.saveSettings();
+      this.desktopCurrentPaths[i] = newPath;
+      this.renderDesktopContents(i);
+    }).open();
+  }
+
+  private addDesktopInstance() {
+    this.plugin.settings.desktopFolders.push("");
+    this.plugin.settings.desktopNames.push("");
+    this.plugin.saveSettings();
+    this.render();
+  }
+
+  private removeDesktopInstance(i: number) {
+    if (this.plugin.settings.desktopFolders.length <= 1) return;
+    this.plugin.settings.desktopFolders.splice(i, 1);
+    this.plugin.settings.desktopNames.splice(i, 1);
+    this.plugin.saveSettings();
+    this.render();
+  }
+
+  private initDesktopDisplay(i: number) {
+    this.renderDesktopContents(i);
+
+    const grid = this.containerEl.querySelector(`#desktop-grid-${i}`);
+    grid?.addEventListener("dblclick", (e) => {
+      const item = (e.target as HTMLElement).closest(".desktop-item") as HTMLElement | null;
+      if (!item) return;
+      const name = item.dataset.path!;
+      const type = item.dataset.type!;
+      if (type === "folder") {
+        this.navigateToDesktopFolder(i, name);
+      } else {
+        this.openDesktopFile(i, name);
+      }
+    });
+
+    this.containerEl.querySelector(`#desktop-back-btn-${i}`)?.addEventListener("click", () => {
+      this.navigateDesktopBack(i);
+    });
+
+    this.containerEl.querySelector(`#desktop-folder-btn-${i}`)?.addEventListener("click", () => {
+      this.openDesktopFolderPicker(i);
+    });
+
+    this.containerEl.querySelector(`#desktop-add-btn-${i}`)?.addEventListener("click", () => {
+      this.addDesktopInstance();
+    });
+
+    this.containerEl.querySelector(`#desktop-close-btn-${i}`)?.addEventListener("click", () => {
+      this.removeDesktopInstance(i);
+    });
+
+    const nameInput = this.containerEl.querySelector(`#desktop-name-input-${i}`) as HTMLInputElement;
+    if (nameInput) {
+      nameInput.addEventListener("change", () => {
+        this.plugin.settings.desktopNames[i] = nameInput.value.trim();
+        this.plugin.saveSettings();
+      });
+      nameInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") nameInput.blur();
+      });
+      // auto-resize input width to fit content
+      const resize = () => {
+        const span = document.createElement("span");
+        span.style.cssText = "font-size: 13px; font-weight: 600; font-family: inherit; position: absolute; visibility: hidden; white-space: pre;";
+        document.body.appendChild(span);
+        span.textContent = nameInput.value || nameInput.placeholder;
+        nameInput.style.width = (span.offsetWidth + 12) + "px";
+        document.body.removeChild(span);
+      };
+      nameInput.addEventListener("input", resize);
+      resize();
+    }
+  }
+
+  // ── 侧边栏 ──────────────────────────────────────────
+
   private sidebarOpen = false;
   private sidebarSearchQuery = "";
 
@@ -1121,8 +1591,12 @@ class HomepageView extends ItemView {
     if (!sidebar) return;
 
     const isOpen = this.sidebarOpen;
-    sidebar.style.width = isOpen ? "220px" : "28px";
-    sidebar.style.minWidth = isOpen ? "220px" : "28px";
+    sidebar.style.width = isOpen ? "236px" : "28px";
+    sidebar.style.minWidth = isOpen ? "236px" : "28px";
+
+    // pin sidebar below header
+    const header = this.containerEl.querySelector("#homepage-header") as HTMLElement;
+    sidebar.style.top = header ? header.offsetHeight + "px" : "48px";
 
     // overlay to block interaction with main content when sidebar is open
     let overlay = this.containerEl.querySelector("#homepage-overlay") as HTMLElement;
@@ -1132,6 +1606,10 @@ class HomepageView extends ItemView {
         overlay.id = "homepage-overlay";
         const content = this.containerEl.querySelector("#homepage-content") as HTMLElement;
         content?.appendChild(overlay);
+        overlay.addEventListener("click", () => {
+          this.sidebarOpen = false;
+          this.renderSidebar();
+        });
       }
       overlay.style.cssText = `
         position: absolute;
@@ -1210,6 +1688,7 @@ class HomepageView extends ItemView {
     const icons: Record<string, string> = {
       schedule: `<svg width="28" height="28" viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.7"><rect x="4" y="5" width="20" height="19" rx="2"/><line x1="4" y1="11" x2="24" y2="11"/><line x1="9" y1="2" x2="9" y2="7"/><line x1="19" y1="2" x2="19" y2="7"/><line x1="10" y1="15" x2="18" y2="15"/><line x1="12" y1="19" x2="16" y2="19"/></svg>`,
       timer: `<svg width="28" height="28" viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.7"><circle cx="14" cy="15" r="9"/><line x1="14" y1="15" x2="14" y2="9"/><line x1="14" y1="15" x2="17" y2="15"/><line x1="11" y1="3" x2="17" y2="3"/><line x1="14" y1="3" x2="14" y2="6"/></svg>`,
+      desktop: `<svg width="28" height="28" viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.7"><rect x="2" y="3" width="24" height="17" rx="2"/><line x1="8" y1="23" x2="20" y2="23"/><line x1="14" y1="20" x2="14" y2="23"/></svg>`,
     };
     return icons[id] || `<svg width="28" height="28" viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.7"><rect x="4" y="4" width="20" height="20" rx="3"/></svg>`;
   }
@@ -1908,5 +2387,9 @@ class HomepageSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           })
       );
+
+    new Setting(containerEl)
+      .setName("超级桌面")
+      .setDesc("各桌面实例的文件夹在组件内通过设置按钮独立配置");
   }
 }
