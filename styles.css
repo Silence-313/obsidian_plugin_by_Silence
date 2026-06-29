@@ -1,1 +1,3 @@
-/* Homepage plugin styles - 暂无样式需要 */
+.calendar-day:hover {
+  background: var(--background-modifier-hover);
+}
