@@ -12,6 +12,8 @@ import { EpisodicMemory } from "./memory/episodic_memory";
 import { UserProfile, type UserProfileData } from "./memory/user_profile";
 import { ToolMemory } from "./memory/tool_memory";
 import { MemoryWriter } from "./memory/memory_writer";
+import { RouterTelemetry } from "./router_telemetry";
+import { RagFeedback } from "./rag_feedback";
 
 // ── Types ───────────────────────────────────────────────────
 
@@ -129,6 +131,10 @@ export class AgentOrchestrator {
   private userProfile: UserProfile;
   private toolMemory: ToolMemory;
   private memoryWriter: MemoryWriter;
+  private routerTelemetry: RouterTelemetry;
+  private ragFeedback: RagFeedback;
+  private interactionCount = 0;
+  private readonly EVOLUTION_CYCLE_INTERVAL = 10;
   private initialized = false;
 
   constructor(config: OrchestratorConfig) {
@@ -139,6 +145,8 @@ export class AgentOrchestrator {
     this.userProfile = new UserProfile();
     this.toolMemory = new ToolMemory();
     this.memoryWriter = new MemoryWriter(this.episodicMemory, this.userProfile, this.toolMemory);
+    this.routerTelemetry = new RouterTelemetry();
+    this.ragFeedback = new RagFeedback();
   }
 
   // ── Initialization ────────────────────────────────────────
@@ -172,8 +180,8 @@ export class AgentOrchestrator {
     // 1. Push to working memory
     this.workingMemory.push({ role: "user", content: userText, timestamp: Date.now() });
 
-    // 2. Tool Router: decide which tool
-    const route = routeTool(userText);
+    // 2. Tool Router: decide which tool (with adaptive telemetry)
+    const route = routeTool(userText, this.routerTelemetry);
     onActivity?.(`路由决策: ${route.tool} (置信度 ${Math.round(route.confidence * 100)}%)`);
 
     // 3. Memory Retrieval Layer
@@ -263,10 +271,53 @@ export class AgentOrchestrator {
       timestamp: Date.now(),
     });
 
-    // 9. Persist memory state (debounced in practice, here we save on each interaction)
+    // 9. Router Telemetry: record routing decision with outcome
+    this.routerTelemetry.recordRouting({
+      query: userText,
+      selectedTool: route.tool,
+      confidence: route.confidence,
+      executionSuccess: toolCalls.length === 0 || toolCalls.every(tc => tc.success),
+      latencyMs: Date.now() - startTime,
+      timestamp: Date.now(),
+    });
+
+    // 10. RAG Feedback: record retrieval quality
+    if (memoryContext.wikiResults.length > 0) {
+      const usedDocs = memoryContext.wikiResults
+        .filter(r => response.includes(r.sourcePath) || response.includes(r.content.substring(0, 50)))
+        .map(r => r.sourcePath);
+      this.ragFeedback.recordRetrieval({
+        query: userText,
+        retrievedDocs: memoryContext.wikiResults.map(r => r.sourcePath),
+        usedDocs: usedDocs.length > 0 ? usedDocs : memoryContext.wikiResults.slice(0, 1).map(r => r.sourcePath),
+        answerQuality: toolCalls.length > 0 && toolCalls.every(tc => tc.success) ? 0.8 : 0.6,
+        timestamp: Date.now(),
+      });
+
+      // Apply feedback to vector store
+      for (const r of memoryContext.wikiResults) {
+        const wasUsed = usedDocs.includes(r.sourcePath);
+        this.vectorStore.applyFeedback(r.sourcePath, wasUsed ? 0.05 : -0.02);
+      }
+    }
+
+    // 11. Evolution Cycle: run periodically
+    this.interactionCount++;
+    if (this.interactionCount % this.EVOLUTION_CYCLE_INTERVAL === 0) {
+      await this.runEvolutionCycle();
+    }
+
+    // 12. Persist memory state
     await this.saveMemoryState();
 
     return { response, toolCalls };
+  }
+
+  // ── Evolution Cycle ───────────────────────────────────────
+
+  private async runEvolutionCycle(): Promise<void> {
+    // Memory decay + consolidation
+    this.memoryWriter.runMemoryMaintenance();
   }
 
   // ── Memory Retrieval Layer ─────────────────────────────────
@@ -674,6 +725,14 @@ ${episodicSection}
     // Load vector index
     const indexJson = await loadJson(`${base}/vector_index.json`);
     if (indexJson) this.vectorStore.deserialize(indexJson);
+
+    // Load router telemetry
+    const telemetryJson = await loadJson(`${base}/router_telemetry.json`);
+    if (telemetryJson) this.routerTelemetry.deserialize(telemetryJson);
+
+    // Load RAG feedback
+    const ragJson = await loadJson(`${base}/rag_feedback.json`);
+    if (ragJson) this.ragFeedback.deserialize(ragJson);
   }
 
   async saveMemoryState(): Promise<void> {
@@ -709,21 +768,40 @@ ${episodicSection}
     await writeJson("profile.json", this.userProfile.serialize());
     await writeJson("tool_stats.json", this.toolMemory.serialize());
     await writeJson("vector_index.json", this.vectorStore.serialize());
+    await writeJson("router_telemetry.json", this.routerTelemetry.serialize());
+    await writeJson("rag_feedback.json", this.ragFeedback.serialize());
   }
 
   // ── Public Accessors (for UI/display) ─────────────────────
 
   get memoryStats(): {
     episodicCount: number;
+    episodicActive: number;
     profileInitialized: boolean;
     vectorDocCount: number;
     toolsTracked: string[];
+    routerAccuracy: number;
+    ragDocsTracked: number;
+    interactionCount: number;
   } {
     return {
       episodicCount: this.episodicMemory.count,
+      episodicActive: this.episodicMemory.activeCount,
       profileInitialized: this.userProfile.isInitialized(),
       vectorDocCount: this.vectorStore.documentCount,
       toolsTracked: this.toolMemory.getAllStats().map(s => s.toolName),
+      routerAccuracy: this.routerTelemetry.getOverallAccuracy(),
+      ragDocsTracked: this.ragFeedback.getAllClusters().length,
+      interactionCount: this.interactionCount,
+    };
+  }
+
+  getEvolutionStats() {
+    return {
+      telemetry: this.routerTelemetry.getAllMetrics(),
+      clusters: this.ragFeedback.getAllClusters(),
+      negativeDocs: this.vectorStore.getNegativeSignals(),
+      decayedEpisodic: this.episodicMemory.getCandidatesForRemoval().length,
     };
   }
 

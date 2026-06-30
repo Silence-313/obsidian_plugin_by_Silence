@@ -7,6 +7,19 @@ export interface VectorSearchResult {
   content: string;
   sourcePath: string;
   score: number; // cosine similarity 0..1
+  relevanceScore?: number;   // RAG feedback: retrieval relevance
+  answerImpactScore?: number; // RAG feedback: how often this doc improves answers
+  downweightFactor?: number;  // RAG feedback: cumulative downweight (never below 0.1)
+}
+
+interface DocFeedback {
+  path: string;
+  relevanceScore: number;
+  answerImpactScore: number;
+  positiveSignals: number;
+  negativeSignals: number;
+  downweightFactor: number;
+  lastAccessed: number;
 }
 
 interface TfIdfIndex {
@@ -28,6 +41,7 @@ interface LoadedDoc {
 export class VectorWikiStore {
   private index: TfIdfIndex | null = null;
   private stopWords: Set<string>;
+  private docFeedback: Map<string, DocFeedback> = new Map();
 
   constructor() {
     // Common Chinese + English stop words
@@ -201,34 +215,24 @@ export class VectorWikiStore {
       }
       docNorm = Math.sqrt(docNorm);
       const similarity = docNorm > 0 ? dotProduct / (queryNorm * docNorm) : 0;
+      const fb = this.docFeedback.get(doc.path);
+      // Apply downweight factor to similarity score
+      const adjustedScore = fb
+        ? Math.round(similarity * fb.downweightFactor * 1000) / 1000
+        : Math.round(similarity * 1000) / 1000;
       return {
         content: doc.content,
         sourcePath: doc.path,
-        score: Math.round(similarity * 1000) / 1000,
+        score: adjustedScore,
+        relevanceScore: fb?.relevanceScore,
+        answerImpactScore: fb?.answerImpactScore,
+        downweightFactor: fb?.downweightFactor ?? 1.0,
       };
     });
 
     // Sort by score descending, return top-K
     scored.sort((a, b) => b.score - a.score);
     return scored.filter(r => r.score > 0.01).slice(0, topK);
-  }
-
-  // ── Serialization (for vault persistence) ─────────────────
-
-  serialize(): string {
-    if (!this.index) return JSON.stringify({ vocabulary: {}, idf: [], documents: [], builtAt: 0 });
-    return JSON.stringify(this.index);
-  }
-
-  deserialize(json: string): void {
-    try {
-      const data = JSON.parse(json);
-      if (data.vocabulary && data.idf && data.documents && data.builtAt) {
-        this.index = data;
-      }
-    } catch {
-      this.index = null;
-    }
   }
 
   get documentCount(): number {
@@ -241,5 +245,94 @@ export class VectorWikiStore {
 
   isLoaded(): boolean {
     return this.index !== null && this.index.documents.length > 0;
+  }
+
+  // ── RAG Feedback ──────────────────────────────────────────
+
+  /**
+   * Apply feedback to adjust document ranking.
+   * Positive impact → increase weight. Negative → downweight (never delete).
+   */
+  applyFeedback(docPath: string, impact: number): void {
+    const fb = this.ensureFeedback(docPath);
+    const MAX_UPDATE = 0.05;
+
+    if (impact > 0) {
+      fb.positiveSignals++;
+      fb.relevanceScore = Number(
+        ((fb.relevanceScore * (fb.positiveSignals + fb.negativeSignals - 1) + 1) /
+          (fb.positiveSignals + fb.negativeSignals)).toFixed(4)
+      );
+      fb.answerImpactScore = Number(
+        Math.min(1, fb.answerImpactScore + MAX_UPDATE).toFixed(4)
+      );
+    } else if (impact < 0) {
+      fb.negativeSignals++;
+      fb.relevanceScore = Number(
+        ((fb.relevanceScore * (fb.positiveSignals + fb.negativeSignals - 1) + 0) /
+          (fb.positiveSignals + fb.negativeSignals)).toFixed(4)
+      );
+      // Downweight after 3+ negative signals with ratio > positive
+      if (fb.negativeSignals >= 3 && fb.negativeSignals > fb.positiveSignals) {
+        fb.downweightFactor = Number(
+          Math.max(0.1, fb.downweightFactor - 0.15).toFixed(4)
+        );
+      }
+    }
+
+    fb.lastAccessed = Date.now();
+  }
+
+  getDocWeight(path: string): number {
+    const fb = this.docFeedback.get(path);
+    if (!fb) return 1.0;
+    return Number((fb.downweightFactor).toFixed(4));
+  }
+
+  getNegativeSignals(): DocFeedback[] {
+    return Array.from(this.docFeedback.values())
+      .filter(fb => fb.downweightFactor < 0.5 && fb.negativeSignals >= 3);
+  }
+
+  private ensureFeedback(path: string): DocFeedback {
+    if (!this.docFeedback.has(path)) {
+      this.docFeedback.set(path, {
+        path,
+        relevanceScore: 0.5,
+        answerImpactScore: 0.5,
+        positiveSignals: 0,
+        negativeSignals: 0,
+        downweightFactor: 1.0,
+        lastAccessed: Date.now(),
+      });
+    }
+    return this.docFeedback.get(path)!;
+  }
+
+  // Feedback serialization (embedded in main serialize/deserialize)
+
+  serialize(): string {
+    return JSON.stringify({
+      index: this.index,
+      feedback: Array.from(this.docFeedback.entries()),
+    });
+  }
+
+  deserialize(json: string): void {
+    try {
+      const data = JSON.parse(json);
+      if (data.index) {
+        this.index = data.index;
+      } else if (data.vocabulary) {
+        // Backward compat: old format without feedback wrapper
+        this.index = data;
+      }
+      if (data.feedback) {
+        this.docFeedback = new Map(data.feedback);
+      }
+    } catch {
+      this.index = null;
+      this.docFeedback = new Map();
+    }
   }
 }

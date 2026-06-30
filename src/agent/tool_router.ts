@@ -1,6 +1,9 @@
 // ── Tool Router ──────────────────────────────────────────────
 // Intent classification via scoring rules, NOT LLM prompt logic.
 // Decouples tool-selection decisions from the system prompt.
+// Adaptive: supports RouterTelemetry for dynamic thresholds.
+
+import type { RouterTelemetry } from "./router_telemetry";
 
 export interface RouterResult {
   tool: string;
@@ -124,7 +127,7 @@ const DIRECT_ANSWER_SIGNALS = [
  * Classify user intent and decide which tool to use.
  * Returns the tool with highest confidence score.
  */
-export function routeTool(query: string): RouterResult {
+export function routeTool(query: string, telemetry?: RouterTelemetry): RouterResult {
   const normalized = query.toLowerCase().trim();
 
   // 1. Check direct-answer signals first
@@ -144,7 +147,7 @@ export function routeTool(query: string): RouterResult {
     }
   }
 
-  // 2. Score each tool
+  // 2. Score each tool with adaptive weights from telemetry
   const scores: Array<{ tool: string; score: number; reasons: string[] }> = [];
 
   for (const [tool, pattern] of Object.entries(TOOL_PATTERNS)) {
@@ -178,8 +181,15 @@ export function routeTool(query: string): RouterResult {
       }
     }
 
-    // Apply weight
+    // Apply base weight
     score *= pattern.weight;
+
+    // Apply adaptive policy weight from telemetry if available
+    if (telemetry) {
+      const policyWeight = telemetry.getPolicyWeight(tool);
+      // Blend base weight with learned policy weight
+      score *= (0.7 + 0.3 * policyWeight);
+    }
 
     // Cap individual tool score at 1.0
     score = Math.min(score, 1.0);
@@ -203,12 +213,16 @@ export function routeTool(query: string): RouterResult {
 
   const best = scores[0];
 
-  // 5. If top score is very low, prefer direct_answer
-  if (best.score < 0.2) {
+  // 5. Adaptive fallback threshold (from telemetry if available)
+  const fallbackThreshold = telemetry
+    ? telemetry.getAdaptiveThreshold(best.tool)
+    : 0.2;
+
+  if (best.score < fallbackThreshold) {
     return {
       tool: "direct_answer",
       confidence: 0.6,
-      reason: `Best tool "${best.tool}" scored too low (${best.score.toFixed(2)}), falling back to direct answer`,
+      reason: `Best tool "${best.tool}" scored too low (${best.score.toFixed(2)} < ${fallbackThreshold}), falling back to direct answer`,
     };
   }
 

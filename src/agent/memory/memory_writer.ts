@@ -5,6 +5,7 @@
 import type { EpisodicMemory, EpisodicEntry } from "./episodic_memory";
 import type { UserProfile } from "./user_profile";
 import type { ToolMemory } from "./tool_memory";
+import { consolidate, mergeMemories, type ScoredMemory } from "../system_evolution";
 
 export interface MemoryWriteDecision {
   memoryType: "episodic" | "profile" | "tool" | "semantic" | "ignore";
@@ -23,6 +24,8 @@ interface Interaction {
   toolResult: string;
   routerConfidence: number;
   timestamp: number;
+  retrievalRelevanceScore?: number;
+  answerImpactScore?: number;
 }
 
 export class MemoryWriter {
@@ -83,6 +86,39 @@ export class MemoryWriter {
       switch (d.memoryType) {
         case "episodic":
           if (d.action === "append") {
+            // Consolidation check: skip if similar memory exists
+            const existingActive = this.episodic.getActiveEntries();
+            const scoredExisting: ScoredMemory[] = existingActive.map(e => ({
+              id: e.id,
+              importanceScore: e.importanceScore ?? e.importance,
+              usageFrequency: e.usageFrequency ?? 0,
+              lastAccessTime: e.lastAccessTime ?? e.timestamp,
+              decayScore: e.decayScore ?? 1.0,
+              usefulnessScore: e.usefulnessScore ?? 0.5,
+              markedForRemoval: e.markedForRemoval ?? false,
+              content: `${e.summary} ${e.detail}`.substring(0, 500),
+              tags: e.tags,
+            }));
+
+            const newScored: ScoredMemory = {
+              id: "",
+              importanceScore: d.importance,
+              usageFrequency: 0,
+              lastAccessTime: Date.now(),
+              decayScore: 1.0,
+              usefulnessScore: 0.5,
+              markedForRemoval: false,
+              content: d.content.substring(0, 500),
+              tags: d.tags,
+            };
+
+            const consolidation = consolidate(newScored, scoredExisting);
+            if (consolidation?.merged) {
+              // Merge: reinforce existing instead of creating duplicate
+              this.episodic.reinforce(consolidation.targetId, 0.02);
+              break;
+            }
+
             const entryType = this.classifyEpisodicType(interaction, d.tags);
             this.episodic.add({
               type: entryType,
@@ -91,6 +127,12 @@ export class MemoryWriter {
               importance: d.importance,
               tags: d.tags,
               relatedFiles: [],
+              importanceScore: d.importance,
+              usageFrequency: 0,
+              lastAccessTime: Date.now(),
+              decayScore: 1.0,
+              usefulnessScore: 0.5,
+              markedForRemoval: false,
             });
           }
           break;
@@ -269,5 +311,78 @@ export class MemoryWriter {
     if (tags.includes("milestone")) return "milestone";
     if (tags.includes("question")) return "question";
     return "event";
+  }
+
+  // ── Memory Maintenance Cycle ──────────────────────────────
+
+  /**
+   * Run periodic memory maintenance: decay, reinforcement,
+   * consolidation, and soft removal marking.
+   * Call every ~10 interactions.
+   */
+  runMemoryMaintenance(): {
+    decayed: number;
+    reinforced: number;
+    consolidated: number;
+    markedForRemoval: number;
+  } {
+    // 1. Apply decay to all episodic entries
+    const decayed = this.episodic.applyDecay(1);
+
+    // 2. Check for candidates for removal
+    const candidates = this.episodic.getCandidatesForRemoval();
+    const markedForRemoval = candidates.length;
+
+    // 3. Consolidation pass: merge highly similar active entries
+    const active = this.episodic.getActiveEntries();
+    let consolidated = 0;
+    const mergedIds = new Set<string>();
+
+    for (let i = 0; i < active.length; i++) {
+      if (mergedIds.has(active[i].id)) continue;
+      for (let j = i + 1; j < active.length; j++) {
+        if (mergedIds.has(active[j].id)) continue;
+        const a: ScoredMemory = {
+          id: active[i].id,
+          importanceScore: active[i].importanceScore ?? active[i].importance,
+          usageFrequency: active[i].usageFrequency ?? 0,
+          lastAccessTime: active[i].lastAccessTime ?? active[i].timestamp,
+          decayScore: active[i].decayScore ?? 1.0,
+          usefulnessScore: active[i].usefulnessScore ?? 0.5,
+          markedForRemoval: false,
+          content: `${active[i].summary} ${active[i].detail}`.substring(0, 500),
+          tags: active[i].tags,
+        };
+        const b: ScoredMemory = {
+          id: active[j].id,
+          importanceScore: active[j].importanceScore ?? active[j].importance,
+          usageFrequency: active[j].usageFrequency ?? 0,
+          lastAccessTime: active[j].lastAccessTime ?? active[j].timestamp,
+          decayScore: active[j].decayScore ?? 1.0,
+          usefulnessScore: active[j].usefulnessScore ?? 0.5,
+          markedForRemoval: false,
+          content: `${active[j].summary} ${active[j].detail}`.substring(0, 500),
+          tags: active[j].tags,
+        };
+
+        const result = consolidate(a, [b]);
+        if (result?.merged) {
+          const merged = mergeMemories(a, b);
+          // Update target entry with merged values
+          this.episodic.update(a.id, {
+            importanceScore: merged.importanceScore,
+            usageFrequency: merged.usageFrequency,
+            usefulnessScore: merged.usefulnessScore,
+            tags: merged.tags,
+          });
+          // Mark source for removal
+          this.episodic.update(b.id, { markedForRemoval: true });
+          mergedIds.add(b.id);
+          consolidated++;
+        }
+      }
+    }
+
+    return { decayed, reinforced: 0, consolidated, markedForRemoval };
   }
 }

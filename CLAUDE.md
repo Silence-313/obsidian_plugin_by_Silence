@@ -45,8 +45,22 @@ src/                 # 源码目录
     desktop.ts       # DesktopComponent — 超级桌面：文件网格、导航、多实例管理
     sidebar.ts       # SidebarComponent — 侧边栏：组件列表、拖拽、搜索过滤
     todolist.ts      # TodoListComponent — 待办列表：嵌入/独立模式、甘特图、Tab 切换
-    llmwiki.ts       # LlmWikiComponent — LLM Wiki：DeepSeek API 对话、知识库维护、Agent 工具调用
+    llmwiki.ts       # LlmWikiComponent — LLM Wiki：DeepSeek API 对话、知识库维护、委托 AgentOrchestrator
 	    wiki-graph.ts    # WikiGraphComponent — Wiki 图谱：Canvas 2D 力导向布局、拖拽/缩放/点击交互
+  agent/             # Agent 模块目录（Memory-Augmented 架构）
+    index.ts          # 模块 barrel export
+    agent_orchestrator.ts  # AgentOrchestrator — 中央管线：Router→Memory→LLM→Tools→MemoryWriter→Response
+    tool_router.ts    # 工具路由：评分式意图分类（keywords+patterns+adaptive thresholds）
+    vector_wiki_store.ts   # TF-IDF + 余弦相似度语义检索，RAG 反馈权重调整
+    router_telemetry.ts    # 路由学习：自适应阈值、策略权重演化、per-tool 成功率追踪
+    rag_feedback.ts        # RAG 反馈环：文档权重调整、查询聚类、负信号下权重
+    system_evolution.ts    # 系统演化：记忆衰减/强化/合并、安全门（±0.05 clamp、3次确认）
+    memory/
+      working_memory.ts    # 短期记忆：最近 N 条对话（纯内存）
+      episodic_memory.ts   # 情景记忆：事件/目标/决策，演化评分字段，衰减+强化
+      user_profile.ts      # 用户画像：结构化属性+置信度追踪
+      tool_memory.ts       # 工具记忆：使用频率/成功率/上下文有效性
+      memory_writer.ts     # 记忆写入：交互后分类+合并去重+定期维护
 manifest.json        # 插件元数据
 DESCRIPTION.md       # 插件功能详细描述文档（面向用户，完整功能说明）
 esbuild.config.mjs   # esbuild 打包配置（入口 src/main.ts，输出到 vault）
@@ -67,14 +81,19 @@ styles.css           # 日历 hover 样式
 | `HomepageSettingTab` | `settings.ts` | 设置面板 |
 | `TodoAddModal` | `modals.ts` | 添加待办的弹窗（继承 Modal） |
 | `DesktopFolderModal` | `modals.ts` | 超级桌面文件夹路径配置弹窗（继承 Modal） |
-| `LlmWikiComponent` | `components/llmwiki.ts` | LLM Wiki：Agent 对话、知识库维护（karpathy 方法论）、每日 13:00 自动维护、macOS Keychain 加密存 API Key |
+| `LlmWikiComponent` | `components/llmwiki.ts` | LLM Wiki：UI 渲染、对话管理、知识库维护（委托 AgentOrchestrator 处理 agent 逻辑） |
+| `AgentOrchestrator` | `agent/agent_orchestrator.ts` | Agent 中央管线：Tool Router → Memory Retrieval → LLM → Tools → Memory Writer → Response |
+| `RouterTelemetry` | `agent/router_telemetry.ts` | 路由学习：自适应阈值、策略权重演化、成功率追踪 |
+| `RagFeedback` | `agent/rag_feedback.ts` | RAG 反馈环：文档权重调整、查询聚类、负信号处理 |
 | `StudyView` | `study-view.ts` | 学习模式 ItemView：iframe 浏览器、视频平台 embed 转换、拖拽选取框 |
 | `StudyController` | `study-controller.ts` | 学习模式编排：split 布局、4 层截图策略、编辑器插入 |
 | `WikiGraphComponent` | `components/wiki-graph.ts` | Wiki 图谱：Canvas 2D 渲染、Fruchterman-Reingold 力导向布局、拖拽/缩放/点击打开文件 |
 
 ### 组件架构
 
-每个组件类构造函数接收 `HomepageView` 引用，通过 `this.view.xxx` 访问插件实例、containerEl、app 及共享方法。`HomepageView` 作为协调层，持有所有组件实例，`addTodo`/`toggleTodo`/`deleteTodo`/`syncTodoToToday`/`syncAllYesterday` 等跨组件操作在 view 层统一调度。
+每个组件类构造函数接收 `HomepageView` 引用，通过 `this.view.xxx` 访问插件实例、containerEl、app 及共享方法。`HomepageView` 作为协调层，持有所有组件实例。
+
+LlmWikiComponent 的 agent 逻辑全部委托给 `AgentOrchestrator`（`src/agent/agent_orchestrator.ts`），组件仅负责 UI 渲染、对话管理、知识库维护。
 
 ### 组件系统
 
@@ -127,18 +146,51 @@ styles.css           # 日历 hover 样式
 - `getOtherCardBounds()` 用 `[data-component-wrapper]` 属性选择器选中所有卡片，排除自身并跳过 `!el.style.left` 的未定位卡片。`data-component-wrapper="true"` 在 render() 中统一添加到各 wrapper div
 - pointermove 拖拽时，`constrainNoOverlap` 可能把卡片推出边界（如 y=−252），`Math.max(0, y)` 裁切后可能仍重叠。因此 pointermove 做了 constrain+clamp 循环（最多 5 次），直到位置稳定
 
-### LLM Wiki 实现细节
+### Agent 架构（Memory-Augmented Agent System）
 
-- **API Key 存储**：使用 macOS Keychain（`security add-generic-password` / `security find-generic-password -w`），data.json 只存 `apiKeyInKeychain: true` 标记位。设置界面显示 `password` 类型掩码输入框，读写通过 `utils.ts` 中的 `saveApiKeyToKeychain()` / `loadApiKeyFromKeychain()` / `deleteApiKeyFromKeychain()`
-- **知识库构建（buildWiki）**：扫描 vault 所有 .md 笔记 → 逐篇调用 DeepSeek API 生成摘要 → 生成 index.md + overview.md + 用户画像 → 临时待办页面在维护后删除。笔记增量更新通过 `source-mtime` 跟踪
-- **Agent 工具系统**：`AGENT_TOOLS` 数组定义工具（OpenAI function-calling 格式），`executeTool()` 本地分发执行（async，方便 `web_search` 网络请求）。当前工具：`get_current_time`、`get_todos`（按日期/状态/优先级/关键词筛选）、`get_todo_stats`（统计概览）、`add_todos`（添加待办到任意日期）、`web_search`（DuckDuckGo 搜索，通过 Obsidian `requestUrl()` 绕过 CSP/CORS，JSON API + HTML 双层 fallback）。System prompt 禁止使用 Markdown 表格（渲染有 bug，用列表替代）
-- **Agent Loop 两分支架构**：先非流式探测（带 tools，判断是否需要工具调用）→ 需要工具则执行工具后流式汇总 → 不需要工具则直接流式回复。DeepSeek API 在启用 `tools` + `tool_choice: "auto"` 时不支持 SSE 流式，所以流式路径不带 tools 以获取真正的逐字流式输出
-- **流式渲染**：`streamResponse()` helper 共用。空助手气泡占位 → `requestAnimationFrame` 驱动 DOM patch（`innerHTML = formatMessage(content)`，流式过程中 markdown 实时渲染）→ 流式完成后重置 `_streamingIdx`。工具执行期间通过 activity 消息显示脉冲提示
-- **链接交互**：`formatMessage()` 将 `[text](url)` 渲染为 `<span class="llmwiki-link" data-url>`，点击弹出"复制链接"/"在浏览器中打开"菜单，`navigator.clipboard.writeText()` + `execCommand("copy")` fallback
-- **输入焦点保持**：`_keepInputFocus` 标记位，`render()` 末尾恢复焦点到 `#llmwiki-chat-input`，光标定位到文本末尾
-- **记忆管线**：每次对话 → `appendChatLog()` 追加到 `llm-wiki/chat-log.md` → 维护时 `generateUserProfile()` 消化对话 + 现有画像 → `concepts/用户画像.md` → 清空 chat-log.md
-- **Markdown 渲染**：`formatMessage()` 分 4 阶段渲染：代码块保护 → 块级元素（标题/h1-h6、分割线、引用、有序/无序列表）→ 内联元素（链接、粗体、斜体、行内代码、删除线）→ 代码块还原
-- **API 调用**：`callDeepSeekRaw()` 统一入口，`withTools=true` 时附加 `tools` + `tool_choice: "auto"`。对话用 `deepseek-chat` 模型，temperature 0.7，max_tokens 4096
+Agent 系统采用模块化 Memory-Augmented 架构，所有 agent 逻辑从 UI 组件中解耦到 `src/agent/` 目录。
+
+**执行管线**（`AgentOrchestrator.process()`）：
+
+```
+User Input → Tool Router → Memory Retrieval → LLM Reasoning → Tool Execution → Memory Writer → Response
+                                                                                      ↓
+                                                                              Evolution Cycle (每10次)
+```
+
+**核心模块**：
+
+| 模块 | 职责 |
+|------|------|
+| `tool_router.ts` | 评分式意图分类（keywords + regex patterns + adaptive weights），支持 RouterTelemetry 自适应阈值 |
+| `vector_wiki_store.ts` | TF-IDF + 余弦相似度语义检索（纯 JS，无外部依赖），支持 RAG 反馈权重调整 |
+| `agent_orchestrator.ts` | 中央管线编排，持有所有子系统，注入 RouterTelemetry + RagFeedback |
+| `memory/` | 4 层记忆：working（短期对话）、episodic（事件/目标/决策，含演化评分）、profile（结构化画像+置信度）、tool（使用统计） |
+| `memory_writer.ts` | 交互后记忆分类写入，含合并去重（consolidation）和定期维护（decay + soft removal） |
+
+**演化系统**（3 个闭环）：
+
+| 闭环 | 模块 | 功能 |
+|------|------|------|
+| Memory Evolution | `system_evolution.ts` + `episodic_memory.ts` | 衰减（指数衰减+使用阻尼）、强化（5 种信号类型）、合并（Jaccard 相似度 >0.85）、软删除标记 |
+| Router Learning | `router_telemetry.ts` + `tool_router.ts` | Per-tool 成功率追踪、自适应置信度阈值（成功↑→降阈值，失败↑→升阈值）、策略权重演化（70%基重+30%学习权重） |
+| RAG Optimization | `rag_feedback.ts` + `vector_wiki_store.ts` | 检索反馈（文档相关性/答案影响评分）、查询聚类（关键词签名哈希）、负信号下权重（永不删除，最低 0.1） |
+
+**安全约束**：所有学习更新 ±0.05/clamp、至少 3 次确认才触发策略变更、低置信度记忆（<0.3）隔离、软删除（mark 而非 delete）
+
+**API Key 存储**：使用 macOS Keychain（`security add-generic-password` / `security find-generic-password -w`），data.json 只存 `apiKeyInKeychain: true` 标记位。
+
+**知识库构建（buildWiki）**：扫描 vault 所有 .md 笔记 → 逐篇调用 DeepSeek API 生成摘要 → 生成 index.md + overview.md + 用户画像 → 重建向量索引。
+
+**Agent 工具系统**：在 `agent_orchestrator.ts` 中定义（OpenAI function-calling 格式），`executeToolLocal()` 本地分发执行。当前工具：`get_current_time`、`get_todos`、`get_todo_stats`、`add_todos`、`web_search`（DuckDuckGo JSON API + HTML 双层 fallback）。
+
+**流式渲染**：`AgentOrchestrator.streamLLM()` 驱动 SSE 解析 → `onStream` 回调 → `requestAnimationFrame` DOM patch（`innerHTML = formatMessage(content)`），50ms 节流。
+
+**链接交互**：`formatMessage()` 将 `[text](url)` 渲染为 `<span class="llmwiki-link" data-url>`，点击弹出菜单。
+
+**记忆管线**：每次对话 → `appendChatLog()` 追加到 `chat-log.md` → 维护时 `generateUserProfile()` 消化 → `concepts/用户画像.md` → 清空 chat-log.md。
+
+**Markdown 渲染**：4 阶段：代码块保护 → 块级元素 → 内联元素 → 代码块还原。System prompt 禁止 Markdown 表格。
 
 ### Wiki 图谱实现细节
 
