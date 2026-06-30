@@ -14,6 +14,9 @@ export { ConceptReasoner, type ReasoningResult } from "./reasoning/concept_reaso
 export { FeedbackProcessor, type ReasoningTrace, type FeedbackStats } from "./reasoning/feedback_processor";
 export { ConceptEvolver, type MergeCandidate, type SplitCandidate, type DecayResult, type EvolutionResult } from "./reasoning/concept_evolver";
 export { DriftController, type CognitivePolicy, type CompressionSignal, type DriftMetrics, DEFAULT_POLICY } from "./policy/drift_controller";
+export { StateMutationEngine, type StateMutation, MUTATION_PRIORITY } from "./core/state_mutation_engine";
+export { MutationQueue } from "./core/mutation_queue";
+export { type CognitiveState, type MemoryState, type ConceptGraphState, type ReasoningState, type FeedbackState, type PolicyState, createEmptyState } from "./core/cognitive_state";
 export { RouterTelemetry, type RoutingRecord, type ToolMetrics } from "./router_telemetry";
 export { RagFeedback, type RetrievalRecord, type DocumentWeight, type QueryCluster } from "./rag_feedback";
 export {

@@ -7,6 +7,7 @@ import type { UserProfile } from "./user_profile";
 import type { ToolMemory } from "./tool_memory";
 import type { MarkdownMemoryStore } from "./memory_store";
 import { ConceptExtractor } from "./concept_extractor";
+import type { MutationQueue } from "../core/mutation_queue";
 import { consolidate, mergeMemories, type ScoredMemory } from "../system_evolution";
 
 export interface MemoryWriteDecision {
@@ -36,18 +37,21 @@ export class MemoryWriter {
   private toolMemory: ToolMemory;
   private markdownStore?: MarkdownMemoryStore;
   private conceptExtractor: ConceptExtractor;
+  private mutationQueue: MutationQueue | null;
 
   constructor(
     episodic: EpisodicMemory,
     profile: UserProfile,
     toolMemory: ToolMemory,
     markdownStore?: MarkdownMemoryStore,
+    mutationQueue?: MutationQueue,
   ) {
     this.episodic = episodic;
     this.profile = profile;
     this.toolMemory = toolMemory;
     this.markdownStore = markdownStore;
     this.conceptExtractor = new ConceptExtractor();
+    this.mutationQueue = mutationQueue ?? null;
   }
 
   /**
@@ -147,7 +151,12 @@ export class MemoryWriter {
             });
             // Immediate markdown write for new episodic entry
             if (this.markdownStore) {
-              this.markdownStore.writeEpisode(newEntry).catch(() => { /* best-effort */ });
+              // Emit through mutation queue if available, else direct write
+              if (this.mutationQueue) {
+                this.mutationQueue.add({ type: "memory_write", payload: { entry: newEntry } });
+              } else {
+                this.markdownStore.writeEpisode(newEntry).catch(() => { /* best-effort */ });
+              }
               // Concept extraction: surface key concepts from this episode
               this.extractAndLinkConcepts(newEntry).catch(() => { /* best-effort */ });
             }

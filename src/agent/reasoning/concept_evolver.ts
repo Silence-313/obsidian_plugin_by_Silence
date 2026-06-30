@@ -10,6 +10,7 @@
 import type { MarkdownMemoryStore, ConceptData } from "../memory/memory_store";
 import type { ConceptGraph, ConceptGraphEdge } from "./concept_graph_builder";
 import { ConceptGraphBuilder } from "./concept_graph_builder";
+import type { MutationQueue } from "../core/mutation_queue";
 
 // ── Types ───────────────────────────────────────────────────
 
@@ -55,10 +56,12 @@ const SPLIT_MIN_CONFLICTING = 2;           // min conflicting relationship group
 export class ConceptEvolver {
   private markdownStore: MarkdownMemoryStore;
   private graphBuilder: ConceptGraphBuilder;
+  private mutationQueue: MutationQueue | null;
 
-  constructor(markdownStore: MarkdownMemoryStore) {
+  constructor(markdownStore: MarkdownMemoryStore, mutationQueue?: MutationQueue) {
     this.markdownStore = markdownStore;
     this.graphBuilder = new ConceptGraphBuilder();
+    this.mutationQueue = mutationQueue ?? null;
   }
 
   // ── Main Evolution Cycle ──────────────────────────────────
@@ -274,11 +277,17 @@ export class ConceptEvolver {
       );
 
       if (newConfidence < oldConfidence) {
-        await this.markdownStore.adjustConceptWeight(concept.name, {
-          confidenceDelta: newConfidence - oldConfidence,
-          importanceDelta: 0,
-          reason: `decay: unused for ${Math.round(daysSinceUpdate)} days`,
-        });
+        if (this.mutationQueue) {
+          this.mutationQueue.add({
+            type: "concept_decay",
+            payload: { conceptSlug: concept.slug, delta: newConfidence - oldConfidence, reason: `decay: unused for ${Math.round(daysSinceUpdate)} days` },
+          });
+        } else {
+          await this.markdownStore.adjustConceptWeight(concept.name, {
+            confidenceDelta: newConfidence - oldConfidence, importanceDelta: 0,
+            reason: `decay: unused for ${Math.round(daysSinceUpdate)} days`,
+          });
+        }
 
         results.push({
           conceptSlug: concept.slug,

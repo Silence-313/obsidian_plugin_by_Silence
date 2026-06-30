@@ -11,6 +11,7 @@
 import type { MarkdownMemoryStore, ConceptData } from "../memory/memory_store";
 import type { ReasoningResult } from "./concept_reasoner";
 import { DriftController, DEFAULT_POLICY, type CognitivePolicy } from "../policy/drift_controller";
+import type { MutationQueue } from "../core/mutation_queue";
 
 // ── Types ───────────────────────────────────────────────────
 
@@ -39,6 +40,7 @@ export interface FeedbackStats {
 export class FeedbackProcessor {
   private markdownStore: MarkdownMemoryStore;
   private driftController: DriftController;
+  private mutationQueue: MutationQueue | null;
   private policyDirty = false;
   private processCount = 0;
   // Track insight frequency across reasoning cycles
@@ -58,9 +60,14 @@ export class FeedbackProcessor {
     lastProcessed: 0,
   };
 
-  constructor(markdownStore: MarkdownMemoryStore, driftController?: DriftController) {
+  constructor(
+    markdownStore: MarkdownMemoryStore,
+    driftController?: DriftController,
+    mutationQueue?: MutationQueue,
+  ) {
     this.markdownStore = markdownStore;
     this.driftController = driftController ?? new DriftController();
+    this.mutationQueue = mutationQueue ?? null;
   }
 
   get controller(): DriftController {
@@ -136,7 +143,11 @@ export class FeedbackProcessor {
       confidence: reasoning.confidence,
     };
 
-    await this.markdownStore.saveReasoningTrace(trace);
+    if (this.mutationQueue) {
+      this.mutationQueue.add({ type: "reasoning_trace", payload: { trace } });
+    } else {
+      await this.markdownStore.saveReasoningTrace(trace);
+    }
     this.stats.tracesStored++;
   }
 
@@ -149,36 +160,48 @@ export class FeedbackProcessor {
   private async reinforceConcepts(reasoning: ReasoningResult): Promise<void> {
     // Key concepts used in reasoning → boost confidence
     for (const conceptName of reasoning.keyConcepts) {
-      await this.markdownStore.adjustConceptWeight(conceptName, {
-        confidenceDelta: 0.02,
-        importanceDelta: 0.01,
-        reason: "used-in-reasoning",
-      });
+      if (this.mutationQueue) {
+        this.mutationQueue.add({
+          type: "concept_update",
+          payload: { conceptName, confidenceDelta: 0.02, importanceDelta: 0.01, reason: "used-in-reasoning" },
+        });
+      } else {
+        await this.markdownStore.adjustConceptWeight(conceptName, {
+          confidenceDelta: 0.02, importanceDelta: 0.01, reason: "used-in-reasoning",
+        });
+      }
       this.stats.conceptsReinforced++;
     }
 
     // Bridging concepts → boost (they connect knowledge domains)
     for (const bridgeName of reasoning.bridgingConcepts) {
-      await this.markdownStore.adjustConceptWeight(bridgeName, {
-        confidenceDelta: 0.03,
-        importanceDelta: 0.02,
-        reason: "bridging-concept",
-      });
+      if (this.mutationQueue) {
+        this.mutationQueue.add({
+          type: "concept_update",
+          payload: { conceptName: bridgeName, confidenceDelta: 0.03, importanceDelta: 0.02, reason: "bridging-concept" },
+        });
+      } else {
+        await this.markdownStore.adjustConceptWeight(bridgeName, {
+          confidenceDelta: 0.03, importanceDelta: 0.02, reason: "bridging-concept",
+        });
+      }
       this.stats.conceptsReinforced++;
     }
 
     // High-confidence reasoning → extra boost to all involved concepts
     if (reasoning.confidence >= 0.6) {
-      const allUsed = [
-        ...reasoning.keyConcepts,
-        ...reasoning.bridgingConcepts,
-      ];
+      const allUsed = [...reasoning.keyConcepts, ...reasoning.bridgingConcepts];
       for (const name of allUsed) {
-        await this.markdownStore.adjustConceptWeight(name, {
-          confidenceDelta: 0.01,
-          importanceDelta: 0.0,
-          reason: "high-confidence-reasoning",
-        });
+        if (this.mutationQueue) {
+          this.mutationQueue.add({
+            type: "concept_update",
+            payload: { conceptName: name, confidenceDelta: 0.01, importanceDelta: 0.0, reason: "high-confidence-reasoning" },
+          });
+        } else {
+          await this.markdownStore.adjustConceptWeight(name, {
+            confidenceDelta: 0.01, importanceDelta: 0.0, reason: "high-confidence-reasoning",
+          });
+        }
       }
     }
   }
@@ -214,11 +237,16 @@ export class FeedbackProcessor {
     for (const [insightKey, data] of this.insightFrequency) {
       if (data.count >= 2) {
         for (const conceptName of data.conceptSlugs) {
-          await this.markdownStore.adjustConceptWeight(conceptName, {
-            confidenceDelta: 0.03,
-            importanceDelta: 0.02,
-            reason: `insight-reinforced-x${data.count}`,
-          });
+          if (this.mutationQueue) {
+            this.mutationQueue.add({
+              type: "concept_update",
+              payload: { conceptName, confidenceDelta: 0.03, importanceDelta: 0.02, reason: `insight-reinforced-x${data.count}` },
+            });
+          } else {
+            await this.markdownStore.adjustConceptWeight(conceptName, {
+              confidenceDelta: 0.03, importanceDelta: 0.02, reason: `insight-reinforced-x${data.count}`,
+            });
+          }
           this.stats.insightsReinforced++;
         }
       }
@@ -236,12 +264,18 @@ export class FeedbackProcessor {
 
       // If contradiction repeats ≥3 times, mark relationships as unstable
       if (count >= 3) {
-        // Extract concept names from contradiction text
         const nameMatches = contradiction.match(/"([^"]+)"/g);
         if (nameMatches && nameMatches.length >= 2) {
           const a = nameMatches[0].replace(/"/g, "");
           const b = nameMatches[1].replace(/"/g, "");
-          this.markdownStore.markRelationshipUnstable(a, b).catch(() => {});
+          if (this.mutationQueue) {
+            this.mutationQueue.add({
+              type: "relationship_mark",
+              payload: { conceptA: a, conceptB: b, stable: false, reason: `contradiction-x${count}` },
+            });
+          } else {
+            this.markdownStore.markRelationshipUnstable(a, b).catch(() => {});
+          }
         }
       }
     }

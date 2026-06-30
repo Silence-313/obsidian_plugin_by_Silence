@@ -17,6 +17,9 @@ import { ConceptGraphBuilder } from "./reasoning/concept_graph_builder";
 import { ConceptReasoner, type ReasoningResult } from "./reasoning/concept_reasoner";
 import { FeedbackProcessor } from "./reasoning/feedback_processor";
 import { ConceptEvolver } from "./reasoning/concept_evolver";
+import { MutationQueue } from "./core/mutation_queue";
+import { StateMutationEngine } from "./core/state_mutation_engine";
+import { CognitiveState, createEmptyState } from "./core/cognitive_state";
 import { RouterTelemetry } from "./router_telemetry";
 import { RagFeedback } from "./rag_feedback";
 
@@ -168,6 +171,8 @@ export class AgentOrchestrator {
   private conceptReasoner: ConceptReasoner;
   private feedbackProcessor: FeedbackProcessor;
   private conceptEvolver: ConceptEvolver;
+  private mutationQueue: MutationQueue;
+  private mutationEngine: StateMutationEngine;
   private lastReasoningResult: ReasoningResult | null = null;
   private routerTelemetry: RouterTelemetry;
   private ragFeedback: RagFeedback;
@@ -190,11 +195,23 @@ export class AgentOrchestrator {
     this.userProfile = new UserProfile();
     this.toolMemory = new ToolMemory();
     this.markdownStore = new MarkdownMemoryStore(config.vault, `${config.wikiFolder}/agent/memory`);
-    this.memoryWriter = new MemoryWriter(this.episodicMemory, this.userProfile, this.toolMemory, this.markdownStore);
+    // Mutation system: all state changes go through queue → engine
+    this.mutationQueue = new MutationQueue();
+    this.mutationEngine = new StateMutationEngine(
+      this.markdownStore,
+      this.episodicMemory,
+      this.userProfile,
+    );
+    this.memoryWriter = new MemoryWriter(
+      this.episodicMemory, this.userProfile, this.toolMemory,
+      this.markdownStore, this.mutationQueue,
+    );
     this.conceptGraphBuilder = new ConceptGraphBuilder();
     this.conceptReasoner = new ConceptReasoner();
-    this.feedbackProcessor = new FeedbackProcessor(this.markdownStore);
-    this.conceptEvolver = new ConceptEvolver(this.markdownStore);
+    this.feedbackProcessor = new FeedbackProcessor(
+      this.markdownStore, undefined, this.mutationQueue,
+    );
+    this.conceptEvolver = new ConceptEvolver(this.markdownStore, this.mutationQueue);
     this.routerTelemetry = new RouterTelemetry();
     this.ragFeedback = new RagFeedback();
   }
@@ -298,6 +315,9 @@ export class AgentOrchestrator {
     const startTime = Date.now();
     const toolCalls: ToolCallResult[] = [];
     const sanitizedText = this.sanitizeInput(userText);
+
+    // Start a new mutation cycle for this interaction
+    this.mutationQueue.newCycle();
 
     try {
     // 1. Push to working memory
@@ -450,6 +470,16 @@ export class AgentOrchestrator {
       if (onFb) onFb("认知反馈处理中...");
       await this.feedbackProcessor.process(this.lastReasoningResult, sanitizedText);
       this.lastReasoningResult = null;
+    }
+
+    // 10.5b Mutation Flush: apply all queued state changes atomically
+    if (this.mutationQueue.size > 0) {
+      try {
+        const result = await this.mutationQueue.flush(this.mutationEngine);
+        if (result.applied > 0 && onActivity) {
+          onActivity(`状态变更已应用: ${result.applied} 项`);
+        }
+      } catch { /* best-effort */ }
     }
 
     // 10.6 Periodic Health Check: detect compression signals
@@ -1304,5 +1334,66 @@ ${memory.conceptReasoning}
 
   searchWiki(query: string, topK?: number) {
     return this.vectorStore.search(query, topK);
+  }
+
+  // ── Cognitive State Snapshot (SSOT) ────────────────────────
+
+  /**
+   * Build a read-only snapshot of the current cognitive state.
+   * This is the SSOT — all modules should derive their view from this.
+   */
+  getStateSnapshot(): CognitiveState {
+    const policy = this.feedbackProcessor.controller.currentPolicy;
+    return {
+      memory: {
+        episodicCount: this.episodicMemory.count,
+        episodicActive: this.episodicMemory.activeCount,
+        workingMemorySize: this.workingMemory.count,
+        profileFields: Object.keys(this.userProfile.profile).length,
+        profileInitialized: this.userProfile.isInitialized(),
+      },
+      concepts: {
+        conceptCount: 0, // requires async load; use healthCheck for live data
+        avgConfidence: 0.5,
+        totalEdges: 0,
+        domainsTracked: Object.keys(policy.conceptPreferences),
+      },
+      reasoning: {
+        lastReasoningConfidence: this.lastReasoningResult?.confidence ?? null,
+        keyConceptsUsed: this.lastReasoningResult?.keyConcepts ?? [],
+        lastQuery: null,
+        reasoningCyclesRun: this.interactionCount,
+      },
+      feedback: {
+        tracesStored: this.feedbackProcessor.getStats().tracesStored,
+        conceptsReinforced: this.feedbackProcessor.getStats().conceptsReinforced,
+        insightsReinforced: this.feedbackProcessor.getStats().insightsReinforced,
+        contradictionsDetected: this.feedbackProcessor.getStats().contradictionsDetected,
+        policyUpdates: 0,
+      },
+      policy: {
+        domainPreferences: { ...policy.conceptPreferences },
+        strategyWeights: {
+          graphTraversal: policy.reasoningStrategyWeights.graphTraversal,
+          patternMatching: policy.reasoningStrategyWeights.patternMatching,
+          abstraction: policy.reasoningStrategyWeights.abstraction,
+        },
+        explorationRate: policy.explorationRate,
+        compressionThreshold: policy.compressionThreshold,
+        version: policy.version,
+      },
+      version: this.interactionCount,
+      lastUpdated: Date.now(),
+    };
+  }
+
+  /**
+   * Get mutation audit trail (current in-memory log).
+   */
+  get mutationAudit(): { count: number; log: string } {
+    return {
+      count: this.mutationEngine.mutationCount,
+      log: this.mutationEngine.serializeLog(),
+    };
   }
 }
