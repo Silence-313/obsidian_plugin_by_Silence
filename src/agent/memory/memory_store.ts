@@ -1096,6 +1096,60 @@ ${trace.bridgingConcepts.length > 0 ? trace.bridgingConcepts.map(b => `- ${b}`).
     }
   }
 
+  // ── Tool Decision Storage ─────────────────────────────────
+
+  private get toolDecisionsDir(): string {
+    return `${this.basePath}/tool_decisions`;
+  }
+
+  /**
+   * Save a tool decision log as markdown.
+   */
+  async saveToolDecision(decision: {
+    id: string; timestamp: number; userQuery: string;
+    useTool: boolean; toolName: string | null; confidence: number;
+    reason: string; queryRewrite?: string; fallbackUsed: boolean;
+    rawResponse: string; latencyMs: number;
+  }): Promise<void> {
+    await this.ensureDir(this.toolDecisionsDir);
+
+    const fm = formatYamlFrontmatter({
+      id: decision.id,
+      timestamp: new Date(decision.timestamp).toISOString(),
+      useTool: decision.useTool,
+      toolName: decision.toolName || "none",
+      confidence: decision.confidence,
+      fallbackUsed: decision.fallbackUsed,
+      type: "tool-decision",
+    });
+
+    const body = `# Tool Decision
+
+## Query
+${decision.userQuery}
+
+## Decision
+- **Use Tool**: ${decision.useTool}
+- **Tool**: ${decision.toolName || "none"}
+- **Confidence**: ${Math.round(decision.confidence * 100)}%
+- **Reason**: ${decision.reason}
+${decision.queryRewrite ? `- **Query Rewrite**: ${decision.queryRewrite}` : ""}
+
+## Meta
+- **Fallback**: ${decision.fallbackUsed}
+- **Latency**: ${decision.latencyMs}ms
+- **Timestamp**: ${new Date(decision.timestamp).toLocaleString("zh-CN")}
+
+## Raw LLM Response
+\`\`\`
+${decision.rawResponse || "(empty)"}
+\`\`\`
+`;
+
+    const path = `${this.toolDecisionsDir}/${decision.id}.md`;
+    await this.vault.create(path, `${fm}\n\n${body}`);
+  }
+
   // ── Utility ───────────────────────────────────────────────
 
   async isInitialized(): Promise<boolean> {

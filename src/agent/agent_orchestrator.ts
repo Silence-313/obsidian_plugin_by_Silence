@@ -20,6 +20,7 @@ import { ConceptEvolver } from "./reasoning/concept_evolver";
 import { MutationQueue } from "./core/mutation_queue";
 import { StateMutationEngine } from "./core/state_mutation_engine";
 import { CognitiveState, createEmptyState } from "./core/cognitive_state";
+import { ToolDecisionPolicy, type ToolDecisionResult } from "./tools/tool_decision_policy";
 import { RouterTelemetry } from "./router_telemetry";
 import { RagFeedback } from "./rag_feedback";
 
@@ -173,6 +174,7 @@ export class AgentOrchestrator {
   private conceptEvolver: ConceptEvolver;
   private mutationQueue: MutationQueue;
   private mutationEngine: StateMutationEngine;
+  private toolDecisionPolicy: ToolDecisionPolicy;
   private lastReasoningResult: ReasoningResult | null = null;
   private routerTelemetry: RouterTelemetry;
   private ragFeedback: RagFeedback;
@@ -212,6 +214,11 @@ export class AgentOrchestrator {
       this.markdownStore, undefined, this.mutationQueue,
     );
     this.conceptEvolver = new ConceptEvolver(this.markdownStore, this.mutationQueue);
+    this.toolDecisionPolicy = new ToolDecisionPolicy({
+      getApiKey: config.getApiKey,
+      apiEndpoint: config.apiEndpoint,
+      model: config.model,
+    });
     this.routerTelemetry = new RouterTelemetry();
     this.ragFeedback = new RagFeedback();
   }
@@ -333,8 +340,91 @@ export class AgentOrchestrator {
       onActivity?.("概念推理完成");
     }
 
+    // 3.5 Tool Decision Layer: LLM autonomously decides tool usage
+    let toolDecisionResult: ToolDecisionResult | null = null;
+    let proactiveToolResult: string | null = null;
+
+    try {
+      const toolCtx = {
+        userQuery: sanitizedText,
+        wikiContext: memoryContext.wikiResults.map(r => r.content).join("\n"),
+        conceptContext: memoryContext.conceptReasoning,
+        episodicContext: memoryContext.episodicContext,
+        availableTools: ["web_search", "get_todos", "add_todos", "get_todo_stats", "get_current_time"],
+      };
+
+      toolDecisionResult = await this.toolDecisionPolicy.decide(toolCtx);
+      onActivity?.(
+        `工具决策: ${toolDecisionResult.decision.use_tool ? toolDecisionResult.decision.tool_name : "不需要工具"} ` +
+        `(置信度 ${Math.round(toolDecisionResult.decision.confidence * 100)}%${toolDecisionResult.fallbackUsed ? ", fallback" : ""})`
+      );
+
+      // If LLM decided to use a tool, execute it proactively
+      if (toolDecisionResult.decision.use_tool && toolDecisionResult.decision.tool_name) {
+        const toolName = toolDecisionResult.decision.tool_name;
+        const queryForTool = toolDecisionResult.decision.query_rewrite || sanitizedText;
+
+        onActivity?.(`自主执行工具: ${toolName}`);
+        const toolStart = Date.now();
+        const toolArgs: Record<string, unknown> = {};
+
+        // Build tool-specific args from the rewritten query
+        if (toolName === "web_search") {
+          toolArgs.query = queryForTool;
+        } else if (toolName === "get_todos") {
+          // Extract date/status keywords from query
+          if (/今天/.test(queryForTool)) toolArgs.date = new Date().toISOString().split("T")[0];
+          if (/未完成|还没做/.test(queryForTool)) toolArgs.status = "pending";
+        } else if (toolName === "get_todo_stats") {
+          // no args needed
+        } else if (toolName === "get_current_time") {
+          // no args needed
+        }
+
+        proactiveToolResult = await this.executeToolLocal(toolName, toolArgs);
+        const toolLatency = Date.now() - toolStart;
+
+        toolCalls.push({
+          toolName,
+          success: !proactiveToolResult.startsWith("Error:"),
+          result: proactiveToolResult,
+          latencyMs: toolLatency,
+        });
+
+        // Record tool usage
+        this.toolMemory.recordCall(
+          toolName,
+          { success: !proactiveToolResult.startsWith("Error:"), latencyMs: toolLatency, responseQuality: 0.7 },
+          sanitizedText,
+          route.tool,
+        );
+
+        // Store tool decision log
+        this.markdownStore.saveToolDecision({
+          id: `td-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          timestamp: Date.now(),
+          userQuery: sanitizedText,
+          useTool: toolDecisionResult.decision.use_tool,
+          toolName: toolDecisionResult.decision.tool_name,
+          confidence: toolDecisionResult.decision.confidence,
+          reason: toolDecisionResult.decision.reason,
+          queryRewrite: toolDecisionResult.decision.query_rewrite,
+          fallbackUsed: toolDecisionResult.fallbackUsed,
+          rawResponse: toolDecisionResult.rawResponse,
+          latencyMs: toolDecisionResult.latencyMs,
+        }).catch(() => { /* best-effort log */ });
+      }
+    } catch (decisionError: any) {
+      // Tool decision layer failure → fall through to existing router behavior
+      onActivity?.(`工具决策失败，回退到路由: ${decisionError?.message?.substring?.(0, 60) || "unknown"}`);
+    }
+
     // 4. Build enhanced system prompt (with reasoning context)
-    const systemPrompt = this.buildSystemPrompt(memoryContext);
+    // If proactive tool was executed, inject result into system prompt
+    const toolResultContext = proactiveToolResult
+      ? `\n## 工具执行结果\n工具 "${toolDecisionResult?.decision.tool_name}" 的执行结果:\n${proactiveToolResult.substring(0, 800)}\n`
+      : "";
+    const systemPrompt = this.buildSystemPrompt(memoryContext) + toolResultContext;
 
     // 5. Build messages for LLM
     const messages = this.buildLLMMessages(systemPrompt, chatHistory, sanitizedText);
