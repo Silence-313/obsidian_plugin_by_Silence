@@ -2,346 +2,7 @@ import { requestUrl } from "obsidian";
 import type HomepageView from "../view";
 import type { ChatMessage } from "../types";
 import { escapeHtml, loadApiKeyFromKeychain, saveApiKeyToKeychain, deleteApiKeyFromKeychain } from "../utils";
-
-// ── Agent Tools ──────────────────────────────────────────────
-
-interface ToolDef {
-  type: "function";
-  function: {
-    name: string;
-    description: string;
-    parameters: {
-      type: "object";
-      properties: Record<string, any>;
-      required?: string[];
-    };
-  };
-}
-
-const AGENT_TOOLS: ToolDef[] = [
-  {
-    type: "function",
-    function: {
-      name: "get_current_time",
-      description: "获取当前的日期、时间和星期几。用于需要知道现在是什么时间/日期/星期几的场景。",
-      parameters: { type: "object", properties: {}, required: [] },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "get_todos",
-      description: "查询待办事项。可按日期、状态（完成/未完成）、优先级筛选。用于用户询问'我有哪些待办'、'昨天的待办'、'未完成的事情'等场景。",
-      parameters: {
-        type: "object",
-        properties: {
-          date: { type: "string", description: "日期筛选，格式 YYYY-MM-DD。不传则返回所有日期。" },
-          status: { type: "string", description: "状态筛选: 'done' 已完成, 'pending' 未完成。不传则返回全部。" },
-          priority: { type: "string", description: "优先级筛选: '高'/'中高'/'中'/'低'。不传则返回全部。" },
-          search: { type: "string", description: "关键词搜索待办文本。不传则返回全部。" },
-          limit: { type: "number", description: "返回条数上限，默认 50。" },
-        },
-        required: [],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "get_todo_stats",
-      description: "获取待办事项的统计概览：总数、完成率、按优先级分布、按日期分布。用于用户询问'我的整体待办情况'、'完成率多少'等场景。",
-      parameters: { type: "object", properties: {}, required: [] },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "add_todos",
-      description: "添加待办事项到指定日期。用户说'帮我安排明天的任务'、'添加一个周五的待办'、'下周一的待办'时使用。按正确格式写入插件数据，让待办直接显示在日程中。",
-      parameters: {
-        type: "object",
-        properties: {
-          date: { type: "string", description: "目标日期，格式 YYYY-MM-DD。用户说'明天'就计算明天日期，'下周一'就算下周一日期。" },
-          todos: {
-            type: "array",
-            description: "要添加的待办事项列表",
-            items: {
-              type: "object",
-              properties: {
-                text: { type: "string", description: "待办内容" },
-                priority: { type: "string", description: "优先级: 高/中高/中/低，默认中" },
-                startTime: { type: "string", description: "开始时间，格式 HH:MM，如 09:00" },
-                endTime: { type: "string", description: "结束时间，格式 HH:MM，如 10:30" },
-              },
-              required: ["text"],
-            },
-          },
-        },
-        required: ["date", "todos"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "web_search",
-      description: "搜索互联网获取实时信息。当知识库无法回答用户问题、需要最新资讯、查询事实性信息时使用。返回搜索结果列表（标题、摘要、链接）。",
-      parameters: {
-        type: "object",
-        properties: {
-          query: { type: "string", description: "搜索关键词" },
-          num_results: { type: "number", description: "返回结果数量，默认 5，最多 10。" },
-        },
-        required: ["query"],
-      },
-    },
-  },
-];
-
-async function executeTool(name: string, args: Record<string, any>, view: HomepageView): Promise<string> {
-  switch (name) {
-    case "get_current_time": {
-      const now = new Date();
-      const weekdays = ["星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"];
-      return JSON.stringify({
-        date: `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日`,
-        time: `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}`,
-        weekday: weekdays[now.getDay()],
-        iso: now.toISOString(),
-      }, null, 2);
-    }
-
-    case "get_todos": {
-      const todos = view.plugin.settings.todos;
-      const priorityLabels: Record<string, string> = {
-        "#e53935": "高", "#fb8c00": "中高", "#fdd835": "中", "#43a047": "低",
-      };
-
-      let filtered = [...todos];
-      if (args.date) {
-        filtered = filtered.filter(t => t.date === args.date);
-      }
-      if (args.status === "done") {
-        filtered = filtered.filter(t => t.done);
-      } else if (args.status === "pending") {
-        filtered = filtered.filter(t => !t.done);
-      }
-      if (args.priority) {
-        filtered = filtered.filter(t => priorityLabels[t.color] === args.priority);
-      }
-      if (args.search) {
-        const kw = args.search.toLowerCase();
-        filtered = filtered.filter(t => t.text.toLowerCase().includes(kw));
-      }
-
-      const limit = args.limit || 50;
-      const results = filtered.slice(0, limit).map(t => ({
-        id: t.id,
-        text: t.text,
-        status: t.done ? "已完成" : "未完成",
-        priority: priorityLabels[t.color] || "未知",
-        date: t.date,
-        startTime: t.startTime || "",
-        endTime: t.endTime || "",
-      }));
-
-      // Sort by date descending, then status
-      results.sort((a: any, b: any) => {
-        if (a.date !== b.date) return b.date.localeCompare(a.date);
-        return a.status === "未完成" ? -1 : 1;
-      });
-
-      return JSON.stringify({
-        total: todos.length,
-        matched: filtered.length,
-        returned: results.length,
-        filters: { date: args.date, status: args.status, priority: args.priority, search: args.search },
-        todos: results,
-      }, null, 2);
-    }
-
-    case "get_todo_stats": {
-      const todos = view.plugin.settings.todos;
-      const priorityLabels: Record<string, string> = {
-        "#e53935": "高", "#fb8c00": "中高", "#fdd835": "中", "#43a047": "低",
-      };
-      const totalCount = todos.length;
-      const doneCount = todos.filter(t => t.done).length;
-      const pendingCount = totalCount - doneCount;
-      const completionRate = totalCount > 0 ? Math.round((doneCount / totalCount) * 100) : 0;
-
-      // By priority
-      const byPriority: Record<string, { label: string; total: number; done: number; rate: number }> = {};
-      for (const t of todos) {
-        const key = t.color || "unknown";
-        if (!byPriority[key]) byPriority[key] = { label: priorityLabels[key] || "未知", total: 0, done: 0, rate: 0 };
-        byPriority[key].total++;
-        if (t.done) byPriority[key].done++;
-      }
-      for (const v of Object.values(byPriority)) {
-        v.rate = v.total > 0 ? Math.round((v.done / v.total) * 100) : 0;
-      }
-
-      // By date (last 14 days)
-      const today = new Date();
-      const byDate: Record<string, { total: number; done: number; pending: number }> = {};
-      for (let i = 13; i >= 0; i--) {
-        const d = new Date(today);
-        d.setDate(d.getDate() - i);
-        const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-        const dayTodos = todos.filter(t => t.date === key);
-        byDate[key] = {
-          total: dayTodos.length,
-          done: dayTodos.filter(t => t.done).length,
-          pending: dayTodos.filter(t => !t.done).length,
-        };
-      }
-
-      // Pending list (top 20)
-      const pending = todos.filter(t => !t.done).sort((a, b) => a.date.localeCompare(b.date)).slice(0, 20).map(t => ({
-        text: t.text,
-        priority: priorityLabels[t.color] || "?",
-        date: t.date,
-      }));
-
-      return JSON.stringify({
-        overview: { totalCount, doneCount, pendingCount, completionRate },
-        byPriority,
-        recent14Days: byDate,
-        pendingTop20: pending,
-      }, null, 2);
-    }
-
-    case "add_todos": {
-      const priorityMap: Record<string, string> = {
-        "高": "#e53935", "中高": "#fb8c00", "中": "#fdd835", "低": "#43a047",
-      };
-      const dateKey: string = args.date || "";
-      if (!dateKey || !/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) {
-        return JSON.stringify({ error: "date 参数必须为 YYYY-MM-DD 格式" });
-      }
-
-      const items: Array<{ text: string; priority?: string; startTime?: string; endTime?: string }> = args.todos || [];
-      if (!Array.isArray(items) || items.length === 0) {
-        return JSON.stringify({ error: "todos 参数必须是非空数组" });
-      }
-
-      const added: Array<{ text: string; priority: string; date: string; startTime?: string; endTime?: string }> = [];
-      for (const item of items) {
-        if (!item.text) continue;
-        const priority = item.priority || "中";
-        const color = priorityMap[priority] || "#fdd835";
-        view.addTodo(
-          item.text,
-          color,
-          dateKey,
-          item.startTime || "",
-          item.endTime || "",
-        );
-        added.push({
-          text: item.text,
-          priority,
-          date: dateKey,
-          startTime: item.startTime || undefined,
-          endTime: item.endTime || undefined,
-        });
-      }
-
-      const [y, m, d] = dateKey.split("-").map(Number);
-      return JSON.stringify({
-        success: true,
-        date: dateKey,
-        dateDisplay: `${y}年${m}月${d}日`,
-        count: added.length,
-        todos: added,
-      }, null, 2);
-    }
-
-    case "web_search": {
-      const query = args.query?.trim();
-      if (!query) return JSON.stringify({ error: "query 参数不能为空" });
-      const numResults = Math.min(args.num_results || 5, 10);
-
-      // Try DDG JSON API via Obsidian's requestUrl (bypasses CSP/CORS)
-      try {
-        const apiUrl = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`;
-        const apiResp = await requestUrl({ url: apiUrl, method: "GET" });
-        if (apiResp.status === 200) {
-          const data = apiResp.json;
-          const results: Array<{ title: string; snippet: string; url: string }> = [];
-
-          // Instant answer
-          if (data.AbstractText) {
-            results.push({
-              title: data.Heading || query,
-              snippet: (data.AbstractText as string).substring(0, 500),
-              url: data.AbstractURL || "",
-            });
-          }
-
-          // RelatedTopics — handle both flat items and nested categories
-          const topics: any[] = data.RelatedTopics || [];
-          const collectTopics = (ts: any[]) => {
-            for (const t of ts) {
-              if (results.length >= numResults) break;
-              if (t.Text) {
-                const parts = (t.Text as string).split(" - ");
-                results.push({
-                  title: (parts[0] || t.Text).substring(0, 120),
-                  snippet: (t.Text as string).substring(0, 300),
-                  url: t.FirstURL || "",
-                });
-              }
-              if (t.Topics) collectTopics(t.Topics);
-            }
-          };
-          collectTopics(topics);
-
-          if (results.length > 0) {
-            return JSON.stringify({ query, resultCount: results.length, results }, null, 2);
-          }
-        }
-      } catch {
-        // JSON API failed, fall through to HTML scraping
-      }
-
-      // Fallback: scrape DDG HTML via requestUrl
-      try {
-        const htmlUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-        const htmlResp = await requestUrl({ url: htmlUrl, method: "GET" });
-        if (htmlResp.status !== 200) throw new Error(`HTTP ${htmlResp.status}`);
-        const html = htmlResp.text;
-
-        const results: Array<{ title: string; snippet: string; url: string }> = [];
-        // Parse <a class="result__a" href="...">Title</a> ... <a class="result__snippet">Snippet</a>
-        const re = /<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?class="result__snippet"[^>]*>([\s\S]*?)<\//gi;
-        let match;
-        while ((match = re.exec(html)) !== null && results.length < numResults) {
-          const rawTitle = match[2].replace(/<[^>]+>/g, "").trim();
-          const rawSnippet = match[3].replace(/<[^>]+>/g, "").trim();
-          if (!rawTitle || !rawSnippet) continue;
-          const uddgMatch = match[1].match(/uddg=(https?%3A[^&]+)/);
-          results.push({
-            title: rawTitle.substring(0, 120),
-            snippet: rawSnippet.substring(0, 300),
-            url: uddgMatch ? decodeURIComponent(uddgMatch[1]) : match[1],
-          });
-        }
-
-        if (results.length > 0) {
-          return JSON.stringify({ query, resultCount: results.length, results }, null, 2);
-        }
-      } catch {
-        // HTML scraping also failed
-      }
-
-      return JSON.stringify({ query, message: "未找到搜索结果，请尝试更换关键词或稍后重试。", results: [] });
-    }
-
-    default:
-      return JSON.stringify({ error: `Unknown tool: ${name}` });
-  }
-}
+import { AgentOrchestrator } from "../agent";
 
 const WIKI_SCHEMA = `# LLM Wiki Schema
 
@@ -375,6 +36,7 @@ export class LlmWikiComponent {
   private _apiKeyLoaded = false;
   private _streamingIdx = -1;
   private _keepInputFocus = false;
+  private orchestrator: AgentOrchestrator | null = null;
 
   constructor(view: HomepageView) {
     this.view = view;
@@ -394,7 +56,6 @@ export class LlmWikiComponent {
       return this._cachedApiKey ?? "";
     }
 
-    // Migration: plaintext key exists but not yet in Keychain
     if (s.apiKey) {
       const migrated = saveApiKeyToKeychain(s.apiKey);
       if (migrated) {
@@ -405,7 +66,6 @@ export class LlmWikiComponent {
         this._apiKeyLoaded = true;
         return this._cachedApiKey ?? "";
       }
-      // Keychain unavailable, fall back to plaintext
       this._cachedApiKey = s.apiKey;
       this._apiKeyLoaded = true;
       return this._cachedApiKey ?? "";
@@ -413,6 +73,30 @@ export class LlmWikiComponent {
 
     this._apiKeyLoaded = true;
     return "";
+  }
+
+  private getOrCreateOrchestrator(): AgentOrchestrator | null {
+    if (!this.apiKey) return null;
+    if (this.orchestrator) return this.orchestrator;
+
+    const app = this.view.plugin.app;
+    this.orchestrator = new AgentOrchestrator({
+      vault: app.vault,
+      wikiFolder: this.settings.wikiFolder,
+      getApiKey: () => this.apiKey,
+      apiEndpoint: this.settings.apiEndpoint,
+      model: this.settings.model,
+      getTodos: () => this.view.plugin.settings.todos,
+      addTodo: (text, color, date, startTime, endTime) => {
+        this.view.addTodo(text, color, date, startTime, endTime);
+      },
+      requestUrl: (opts) => requestUrl({ url: opts.url, method: opts.method }),
+    });
+
+    // Initialize in background
+    this.orchestrator.initialize().catch(console.error);
+
+    return this.orchestrator;
   }
 
   static setApiKey(key: string): boolean {
@@ -600,7 +284,6 @@ export class LlmWikiComponent {
     const input = this.view.containerEl.querySelector("#llmwiki-chat-input") as HTMLInputElement;
     if (input) {
       input.focus();
-      // Move cursor to end of text
       const len = input.value.length;
       input.setSelectionRange(len, len);
     }
@@ -641,6 +324,8 @@ export class LlmWikiComponent {
       await this.view.plugin.saveSettings();
       this._cachedApiKey = key;
       this._apiKeyLoaded = true;
+      // Reset orchestrator when key changes
+      this.orchestrator = null;
       this.showApiKeyConfig = false;
       this.render();
     });
@@ -657,11 +342,11 @@ export class LlmWikiComponent {
       await this.view.plugin.saveSettings();
       this._cachedApiKey = null;
       this._apiKeyLoaded = true;
+      this.orchestrator = null;
       this.showApiKeyConfig = false;
       this.render();
     });
 
-    // Enter key to save
     const keyInputForKeydown = card.querySelector("#llmwiki-key-input") as HTMLInputElement | null;
     keyInputForKeydown?.addEventListener("keydown", ((e: KeyboardEvent) => {
       if (e.key === "Enter") {
@@ -688,7 +373,6 @@ export class LlmWikiComponent {
       const url = link.dataset.url || "";
       this.showLinkPopup(link, url);
     });
-    // Close popup on outside click (skip clicks on links or inside popup)
     document.addEventListener("click", (e) => {
       const target = e.target as HTMLElement;
       if (target.closest(".llmwiki-link") || target.closest("#llmwiki-link-popup")) return;
@@ -697,7 +381,6 @@ export class LlmWikiComponent {
   }
 
   private showLinkPopup(anchor: HTMLElement, url: string) {
-    // Remove any existing popup
     this.closeLinkPopup();
     const popup = document.createElement("div");
     popup.id = "llmwiki-link-popup";
@@ -729,7 +412,6 @@ export class LlmWikiComponent {
       try {
         await navigator.clipboard.writeText(url);
       } catch {
-        // fallback for older Electron
         const ta = document.createElement("textarea");
         ta.value = url; ta.style.position = "fixed"; ta.style.opacity = "0";
         document.body.appendChild(ta); ta.select();
@@ -743,7 +425,6 @@ export class LlmWikiComponent {
       this.closeLinkPopup();
     });
 
-    // Keep popup in viewport
     const popRect = popup.getBoundingClientRect();
     if (popRect.right > window.innerWidth - 8) popup.style.left = `${window.innerWidth - popRect.width - 8}px`;
     if (popRect.bottom > window.innerHeight - 8) popup.style.top = `${rect.top - popRect.height - 4}px`;
@@ -755,11 +436,10 @@ export class LlmWikiComponent {
   }
 
   private formatMessage(content: string): string {
-    // Phase 0: Escape HTML
     let html = content
       .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-    // Phase 1: Extract code blocks to protect from further processing
+    // Phase 1: Extract code blocks
     const codeBlocks: string[] = [];
     html = html.replace(/```(\w*)\r?\n([\s\S]*?)```/g, (_m, _lang, code) => {
       const idx = codeBlocks.length;
@@ -767,16 +447,15 @@ export class LlmWikiComponent {
       return `%%CODEBLOCK_${idx}%%`;
     });
 
-    // Phase 2: Block-level elements (line by line)
+    // Phase 2: Block-level elements
     const lines = html.split("\n");
     const out: string[] = [];
     let inList = false;
     let listType = "";
 
     for (let i = 0; i < lines.length; i++) {
-      let line = lines[i];
+      const line = lines[i];
 
-      // Headers
       const hMatch = line.match(/^(#{1,6})\s+(.+)$/);
       if (hMatch) {
         if (inList) { out.push(listType === "ul" ? "</ul>" : "</ol>"); inList = false; }
@@ -786,48 +465,40 @@ export class LlmWikiComponent {
         continue;
       }
 
-      // Horizontal rule
       if (/^[-*_]{3,}\s*$/.test(line)) {
         if (inList) { out.push(listType === "ul" ? "</ul>" : "</ol>"); inList = false; }
         out.push('<hr style="border:none;border-top:1px solid var(--background-modifier-border);margin:8px 0;">');
         continue;
       }
 
-      // Blockquote
       if (line.startsWith("> ")) {
         if (inList) { out.push(listType === "ul" ? "</ul>" : "</ol>"); inList = false; }
-        const q = line.replace(/^> /, "");
-        out.push(`<blockquote style="border-left:3px solid var(--interactive-accent);margin:4px 0;padding:2px 10px;color:var(--text-muted);">${q}</blockquote>`);
+        out.push(`<blockquote style="border-left:3px solid var(--interactive-accent);margin:4px 0;padding:2px 10px;color:var(--text-muted);">${line.replace(/^> /, "")}</blockquote>`);
         continue;
       }
 
-      // Unordered list
       const ulMatch = line.match(/^(\s*)[-*]\s+(.+)$/);
       if (ulMatch) {
         if (!inList || listType !== "ul") {
           if (inList) out.push(listType === "ul" ? "</ul>" : "</ol>");
           out.push('<ul style="margin:4px 0;padding-left:18px;">');
-          inList = true;
-          listType = "ul";
+          inList = true; listType = "ul";
         }
         out.push(`<li style="margin:2px 0;">${ulMatch[2]}</li>`);
         continue;
       }
 
-      // Ordered list
       const olMatch = line.match(/^(\s*)\d+\.\s+(.+)$/);
       if (olMatch) {
         if (!inList || listType !== "ol") {
           if (inList) out.push(listType === "ul" ? "</ul>" : "</ol>");
           out.push('<ol style="margin:4px 0;padding-left:18px;">');
-          inList = true;
-          listType = "ol";
+          inList = true; listType = "ol";
         }
         out.push(`<li style="margin:2px 0;">${olMatch[2]}</li>`);
         continue;
       }
 
-      // End of list
       if (inList && line.trim() === "") {
         out.push(listType === "ul" ? "</ul>" : "</ol>");
         inList = false;
@@ -835,34 +506,24 @@ export class LlmWikiComponent {
         continue;
       }
       if (inList && line.trim() !== "") {
-        // Close list on non-list line
         out.push(listType === "ul" ? "</ul>" : "</ol>");
         inList = false;
       }
 
-      // Paragraph / empty line
       if (line.trim() === "") {
         out.push("<br>");
       } else {
         out.push(line);
       }
     }
-    if (inList) {
-      out.push(listType === "ul" ? "</ul>" : "</ol>");
-    }
-
+    if (inList) out.push(listType === "ul" ? "</ul>" : "</ol>");
     html = out.join("\n");
 
     // Phase 3: Inline elements
-    // Links — use data-url to intercept clicks
     html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<span class="llmwiki-link" data-url="$2" style="color:var(--interactive-accent);text-decoration:underline;cursor:pointer;">$1</span>');
-    // Bold
     html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-    // Italic
     html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-    // Inline code (but not inside code blocks)
     html = html.replace(/`([^`]+)`/g, '<code style="background:var(--background-primary-alt);padding:1px 5px;border-radius:3px;font-size:12px;">$1</code>');
-    // Strikethrough
     html = html.replace(/~~([^~]+)~~/g, '<del>$1</del>');
 
     // Phase 4: Restore code blocks
@@ -871,6 +532,8 @@ export class LlmWikiComponent {
     return html;
   }
 
+  // ── Message Handling (delegates to orchestrator) ──────────
+
   private async handleSend() {
     const input = this.view.containerEl.querySelector("#llmwiki-chat-input") as HTMLInputElement;
     if (!input) return;
@@ -878,249 +541,127 @@ export class LlmWikiComponent {
     if (!text) return;
     input.value = "";
 
+    const orch = this.getOrCreateOrchestrator();
+    if (!orch) {
+      this.chatMessages.push({ role: "assistant", content: "❌ 请先配置 API Key", timestamp: Date.now() });
+      this.render();
+      return;
+    }
+
     const ts = Date.now();
     this.chatMessages.push({ role: "user", content: text, timestamp: ts });
     this._keepInputFocus = true;
     this.render();
 
     try {
-      const wikiContext = await this.searchWiki(text);
-      const response = await this.agentLoop(text, wikiContext);
+      // Activity: analyzing
+      this.showActivity("正在分析你的问题...");
+
+      // Build chat history for LLM context
+      const history = this.chatMessages
+        .filter(m => m.role !== "activity")
+        .slice(-10)
+        .map(m => ({ role: m.role, content: m.content }));
+
+      // Add streaming assistant bubble
+      this.chatMessages.push({ role: "assistant", content: "", timestamp: Date.now() });
+      this._streamingIdx = this.chatMessages.length - 1;
+
+      const { response } = await orch.process(
+        text,
+        history,
+        // onStream: update DOM with markdown rendering
+        (content) => {
+          const msg = this.chatMessages[this._streamingIdx];
+          if (msg) msg.content = content;
+          requestAnimationFrame(() => {
+            const el = this.view.containerEl.querySelector("#llmwiki-streaming");
+            if (el) {
+              el.innerHTML = this.formatMessage(content);
+              const chat = this.view.containerEl.querySelector("#llmwiki-chat");
+              if (chat) chat.scrollTop = chat.scrollHeight;
+            }
+          });
+        },
+        // onActivity: show what the orchestrator is doing
+        (msg) => {
+          this.showActivity(msg);
+        },
+      );
+
+      // Clear activity, finalize content
       this.clearActivity();
+      this._streamingIdx = -1;
+      const msg = this.chatMessages[this.chatMessages.length - 1];
+      if (msg && msg.role === "assistant") msg.content = response;
+
       await this.appendChatLog(text, response);
     } catch (e: any) {
       this.clearActivity();
-      this.chatMessages.push({ role: "assistant", content: `❌ 错误: ${e.message}`, timestamp: ts });
+      // Remove empty assistant bubble
+      this.chatMessages = this.chatMessages.filter(
+        m => !(m.role === "assistant" && m.content === "" && m.timestamp > ts - 1000)
+      );
+      this.chatMessages.push({ role: "assistant", content: `❌ 错误: ${e.message}`, timestamp: Date.now() });
     }
     this._keepInputFocus = true;
     this.render();
   }
 
-  // ── Agent Loop ──────────────────────────────────────────
-
-  private clearActivity() {
-    this.chatMessages = this.chatMessages.filter(m => m.role !== "activity");
-  }
-
-  private addActivity(text: string) {
+  private showActivity(text: string) {
     this.clearActivity();
     this.chatMessages.push({ role: "activity", content: text, timestamp: Date.now() });
     this._keepInputFocus = true;
     this.render();
   }
 
-  private async agentLoop(userText: string, wikiContext: string): Promise<string> {
-    const messages = this.buildChatMessages(userText, wikiContext);
-
-    // Step 1: Determine if tools are needed (non-streaming, quick)
-    this.addActivity("🤔 正在分析你的问题...");
-    const probeResp = await this.callDeepSeekWithTools(messages);
-    const probeChoice = probeResp.choices?.[0];
-    if (!probeChoice) throw new Error("API 返回空响应");
-    const toolCalls = probeChoice.message?.tool_calls ?? [];
-    const probeText = probeChoice.message?.content ?? "";
-
-    this.clearActivity();
-
-    if (toolCalls.length > 0) {
-      // ── Tools path: execute tools, then stream final answer ──
-      messages.push({
-        role: "assistant",
-        content: probeText,
-        tool_calls: toolCalls,
-      });
-
-      for (const tc of toolCalls) {
-        let args: Record<string, any> = {};
-        try { args = JSON.parse(tc.function.arguments || "{}"); } catch { /* */ }
-        const argsStr = this.formatToolArgs(tc.function.name, args);
-        this.addActivity(`🔧 正在调用 ${tc.function.name}${argsStr}...`);
-        const result = await executeTool(tc.function.name, args, this.view);
-        const summary = this.summarizeToolResult(tc.function.name, result);
-        this.addActivity(`✅ ${summary}`);
-        await this.delay(300);
-        messages.push({ role: "tool", tool_call_id: tc.id, content: result });
-      }
-
-      // Stream final answer (no tools needed — tool results are already in context)
-      this.clearActivity();
-      return this.streamResponse(messages);
-    }
-
-    // ── No-tools path: stream directly into assistant bubble ──
-    return this.streamResponse(messages);
+  private clearActivity() {
+    this.chatMessages = this.chatMessages.filter(m => m.role !== "activity");
   }
 
-  private async streamResponse(messages: any[]): Promise<string> {
-    this.chatMessages.push({ role: "assistant", content: "", timestamp: Date.now() });
-    this._streamingIdx = this.chatMessages.length - 1;
-    this._keepInputFocus = true;
-    this.render();
+  // ── Chat Log Persistence ─────────────────────────────────
 
-    let rafId = 0;
-    let fullContent = "";
-    const result = await this.callDeepSeekStream(messages, false, (content) => {
-      fullContent = content;
-      const msg = this.chatMessages[this._streamingIdx];
-      if (msg) msg.content = content;
-      if (rafId) cancelAnimationFrame(rafId);
-      rafId = requestAnimationFrame(() => {
-        const el = this.view.containerEl.querySelector("#llmwiki-streaming");
-        if (el) {
-          el.innerHTML = this.formatMessage(content);
-          const chat = this.view.containerEl.querySelector("#llmwiki-chat");
-          if (chat) chat.scrollTop = chat.scrollHeight;
-        }
-      });
-    });
-
-    if (rafId) {
-      await new Promise<void>(resolve => {
-        cancelAnimationFrame(rafId);
-        rafId = requestAnimationFrame(() => resolve());
-      });
-    }
-
-    this._streamingIdx = -1;
-    const msg = this.chatMessages[this.chatMessages.length - 1];
-    if (msg && msg.role === "assistant") msg.content = fullContent || result.content;
-    return fullContent || result.content;
+  private chatLogPath(): string {
+    return `${this.settings.wikiFolder}/chat-log.md`;
   }
 
-  private formatToolArgs(_name: string, args: Record<string, any>): string {
-    const nonEmpty = Object.entries(args).filter(([_, v]) => v !== undefined && v !== "");
-    if (nonEmpty.length === 0) return "";
-    return `(${nonEmpty.map(([k, v]) => `${k}: ${JSON.stringify(v)}`).join(", ")})`;
-  }
-
-  private summarizeToolResult(name: string, result: string): string {
-    try {
-      const obj = JSON.parse(result);
-      switch (name) {
-        case "get_current_time":
-          return `当前时间: ${obj.date} ${obj.time} ${obj.weekday}`;
-        case "get_todos":
-          return `查询到 ${obj.matched} 条待办（返回 ${obj.returned} 条）`;
-        case "get_todo_stats":
-          return `待办统计: 共 ${obj.overview.totalCount} 条，完成率 ${obj.overview.completionRate}%`;
-        case "add_todos":
-          return `已添加 ${obj.count} 条待办 (${obj.dateDisplay})`;
-        case "web_search":
-          return `搜索 "${obj.query}" 返回 ${obj.resultCount} 条结果`;
-        default:
-          return "工具执行完成";
-      }
-    } catch {
-      return "工具执行完成";
-    }
-  }
-
-  private buildChatMessages(userText: string, wikiContext: string): any[] {
+  private async appendChatLog(userMsg: string, assistantMsg: string) {
+    const vault = this.view.plugin.app.vault;
+    const path = this.chatLogPath();
     const now = new Date();
-    const systemPrompt = `你是用户个人知识库的 AI Agent，拥有工具调用能力。你有权访问用户笔记生成的 wiki 知识库。
+    const ts = now.toISOString();
+    const entry = `\n## [${ts}] 用户\n${userMsg}\n\n## [${ts}] Agent\n${assistantMsg}\n`;
 
-## 当前时间
-- 日期: ${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日
-- 时间: ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}
-- 星期${["日", "一", "二", "三", "四", "五", "六"][now.getDay()]}
-
-## 可用工具
-- get_current_time: 获取精确的当前日期和时间。当需要知道"现在几点"、"今天几号"、"昨天是什么日期"时使用。
-- get_todos: 查询待办事项，可按日期、状态、优先级筛选。当用户问"我的待办"、"昨天的待办"、"未完成的事"时必须使用。
-- get_todo_stats: 获取待办统计概览。当用户问"完成率"、"整体待办情况"时使用。
-- add_todos: 添加待办事项到指定日期。需要提供 date（YYYY-MM-DD 格式）和 todos 数组。用户说"帮我安排明天的任务"、"添加周五的待办"、"下周一的待办"时使用。根据当前时间计算出目标日期后调用。每个待办可指定内容、优先级（高/中高/中/低）、时间范围。
-- web_search: 搜索互联网获取实时信息。当知识库无法回答用户的问题、需要最新资讯或事实性信息时使用。参数 query（搜索关键词），可选 num_results（默认5）。返回结果含 url 字段，回答时必须附带来源链接。
-
-## 待办优先级颜色
-- 高: #e53935 (红色)
-- 中高: #fb8c00 (橙色)
-- 中: #fdd835 (黄色)
-- 低: #43a047 (绿色)
-创建待办时必须使用这些优先级标签。
-
-## 知识库内容
-${wikiContext || "（知识库为空或未找到相关内容）"}
-
-## 规则
-1. 如果知识库中有相关信息，请基于知识库内容回答，并注明来源（如 "根据你的笔记《xxx》..."）
-2. 如果知识库中没有相关信息，可以基于你的常识回答，但要说明这是常识而非来自用户的笔记
-3. 回答使用中文，清晰简洁
-4. 相关页面用 [[页面名]] 格式引用
-5. 不要编造知识库中不存在的内容
-6. 当用户问到时间/日期相关问题时，主动使用 get_current_time 工具
-7. 当用户问到待办/日程/任务相关问题时，必须使用 get_todos 或 get_todo_stats 工具查询实时数据
-8. 当用户要求添加/安排/创建待办事项时，使用 add_todos 工具，根据当前时间计算出目标日期（YYYY-MM-DD），优先级的默认值为"中"
-9. 当知识库无法回答用户问题、用户询问最新信息/实时资讯、或用户明确要求搜索时，使用 web_search 工具。**关键：搜索结果的每条信息后面必须附带来源链接**，格式为 "- 信息内容 [来源标题](url)" 或 "根据 [来源标题](url)，..."。禁止只给搜索结果文本而不给链接。
-10. 绝对不要使用 Markdown 表格（表格渲染有 bug）。用列表、分段文字或其他格式替代表格展示数据`;
-
-    const history = this.chatMessages.slice(-10).map(m => ({
-      role: m.role,
-      content: m.content,
-    }));
-
-    return [
-      { role: "system", content: systemPrompt },
-      ...history,
-      { role: "user", content: userText },
-    ];
+    const allFiles = vault.getFiles();
+    const logFile = allFiles.find(f => f.path === path);
+    if (logFile) {
+      await vault.append(logFile, entry);
+    } else {
+      await this.ensureWikiDir(this.settings.wikiFolder);
+      await vault.create(path, `# 对话记录\n\n> 这些对话将在下次知识库维护时被消化，然后清空。\n${entry}`);
+    }
   }
 
-  async searchWiki(query: string): Promise<string> {
-    const wikiFolder = this.settings.wikiFolder;
-    const files = this.view.plugin.app.vault.getFiles();
-
-    // Find index.md in wiki folder
-    const indexFile = files.find(
-      f => f.path.startsWith(wikiFolder) && f.path.endsWith("index.md")
-    );
-    const wikiFiles = files.filter(
-      f => f.path.startsWith(wikiFolder) && f.extension === "md" && f !== indexFile
-    );
-
-    if (!indexFile && wikiFiles.length === 0) return "";
-
-    const keywords = query.toLowerCase().split(/\s+/).filter(k => k.length > 0);
-    const scored: Array<{ path: string; score: number; content: string }> = [];
-
-    for (const file of wikiFiles.slice(0, 30)) {
-      try {
-        const content = await this.view.plugin.app.vault.read(file);
-        const lower = content.toLowerCase();
-        let score = 0;
-        for (const kw of keywords) {
-          const count = lower.split(kw).length - 1;
-          score += count * 10;
-          if (file.name.toLowerCase().includes(kw)) score += 50;
-          if (file.path.toLowerCase().includes(kw)) score += 30;
-        }
-        if (score > 0) {
-          scored.push({ path: file.path, score, content });
-        }
-      } catch {
-        // skip unreadable files
-      }
-    }
-
-    scored.sort((a, b) => b.score - a.score);
-
-    if (scored.length === 0) {
-      // Return index content as overview
-      if (indexFile) {
-        try {
-          const idxContent = await this.view.plugin.app.vault.read(indexFile);
-          return `## Wiki 目录\n${idxContent.substring(0, 3000)}`;
-        } catch {
-          return "";
-        }
-      }
-      return "";
-    }
-
-    const top = scored.slice(0, 3);
-    return top.map(s =>
-      `### 📄 ${s.path}\n${s.content.substring(0, 2000)}${s.content.length > 2000 ? "\n...(已截断)" : ""}`
-    ).join("\n\n---\n\n");
+  private async readChatLog(): Promise<string> {
+    const vault = this.view.plugin.app.vault;
+    const path = this.chatLogPath();
+    const allFiles = vault.getFiles();
+    const logFile = allFiles.find(f => f.path === path);
+    if (!logFile) return "";
+    try { return await vault.read(logFile); } catch { return ""; }
   }
+
+  private async clearChatLog() {
+    const vault = this.view.plugin.app.vault;
+    const path = this.chatLogPath();
+    const allFiles = vault.getFiles();
+    const logFile = allFiles.find(f => f.path === path);
+    if (logFile) {
+      await vault.modify(logFile, `# 对话记录\n\n> 上次消化时间: ${new Date().toLocaleString("zh-CN")}\n> 等待新对话...\n`);
+    }
+  }
+
+  // ── Wiki Building ─────────────────────────────────────────
 
   async buildWiki() {
     if (this.isBuilding) return;
@@ -1135,7 +676,6 @@ ${wikiContext || "（知识库为空或未找到相关内容）"}
       const wikiFolder = this.settings.wikiFolder;
       const allFiles = vault.getFiles();
 
-      // Exclude system dirs and wiki folder itself
       const excludeDirs = [".obsidian", ".trash", ".git", wikiFolder, "_attachments", "assets"];
       const noteFiles = allFiles.filter(f => {
         if (f.extension !== "md") return false;
@@ -1145,22 +685,18 @@ ${wikiContext || "（知识库为空或未找到相关内容）"}
         return true;
       });
 
-      // Read chat log before building (will be consumed and cleared)
       const chatLog = await this.readChatLog();
-      const hasChatLog = chatLog.length > 100; // more than just the header
+      const hasChatLog = chatLog.length > 100;
 
-      // Ensure wiki directory structure exists
       await this.ensureWikiDir(`${wikiFolder}/summaries`);
       await this.ensureWikiDir(`${wikiFolder}/concepts`);
 
-      // Create SCHEMA.md if it doesn't exist
       const schemaPath = `${wikiFolder}/SCHEMA.md`;
       if (!allFiles.some(f => f.path === schemaPath)) {
         await vault.create(schemaPath, WIKI_SCHEMA);
         this.addBuildLog("已创建 SCHEMA.md");
       }
 
-      // Process each note
       const total = noteFiles.length;
       let processed = 0;
 
@@ -1183,14 +719,12 @@ ${wikiContext || "（知识库为空或未找到相关内容）"}
           if (existingSummary) {
             const existingFile = allFiles.find(f => f.path === summaryPath)!;
             const existingStat = await vault.read(existingFile);
-            // Only skip if source hasn't changed (stored in summary meta)
             if (existingStat.includes(`source-mtime: ${file.stat.mtime}`)) {
               this.addBuildLog(`  跳过(未变更): ${file.name}`);
               continue;
             }
           }
 
-          // Generate summary via LLM
           const summary = await this.generateSummary(file.path, content);
           if (existingSummary) {
             const existingFile = allFiles.find(f => f.path === summaryPath)!;
@@ -1203,13 +737,12 @@ ${wikiContext || "（知识库为空或未找到相关内容）"}
           this.addBuildLog(`  ❌ 失败: ${e.message}`);
         }
 
-        // Small delay between API calls to avoid rate limiting
         if (processed < total) {
           await this.delay(500);
         }
       }
 
-      // Generate index - refresh file list to include newly created summaries
+      // Generate index
       this.buildProgress = "生成索引...";
       this.addBuildLog("生成 index.md ...");
       this.render();
@@ -1240,28 +773,6 @@ ${wikiContext || "（知识库为空或未找到相关内容）"}
         await vault.create(overviewPath, overviewContent);
       }
 
-      // Generate todo/concept page if there's todo data
-      if (todoCtx) {
-        this.buildProgress = "生成待办知识页...";
-        this.addBuildLog("生成 待办与日程.md ...");
-        this.render();
-        const todoPagePath = `${wikiFolder}/concepts/待办与日程.md`;
-        const refreshedAgain = vault.getFiles();
-        const existingTodo = refreshedAgain.find(f => f.path === todoPagePath);
-        const todoPageContent = `---
-date: ${new Date().toISOString().split("T")[0]}
-type: concept
----
-
-${todoCtx}`;
-        if (existingTodo) {
-          await vault.modify(existingTodo, todoPageContent);
-        } else {
-          await vault.create(todoPagePath, todoPageContent);
-        }
-        this.addBuildLog("  ✅ 已生成待办知识页");
-      }
-
       // Generate user profile from chat log
       if (hasChatLog) {
         this.buildProgress = "更新用户画像...";
@@ -1287,19 +798,28 @@ ${todoCtx}`;
       this.addBuildLog("更新 log.md ...");
       await this.appendLog(wikiFolder, `维护完成 — 处理 ${processed} 篇笔记，${summaries.length} 个摘要，${this.view.plugin.settings.todos.length} 条待办${hasChatLog ? "，" + chatLog.split("\n").filter(l => l.startsWith("## [")).length + " 条对话" : ""}`);
 
-      // Clear chat log after successful digestion
+      // Clear chat log
       if (hasChatLog) {
         await this.clearChatLog();
         this.addBuildLog("已清空对话记录");
       }
 
-      // Delete temporary todo page — Agent tools provide real-time data
+      // Delete temporary todo page
       const todoPagePath = `${wikiFolder}/concepts/待办与日程.md`;
       const finalFiles = vault.getFiles();
       const todoPage = finalFiles.find(f => f.path === todoPagePath);
       if (todoPage) {
         await vault.delete(todoPage);
         this.addBuildLog("已删除临时待办页面");
+      }
+
+      // Rebuild vector index for semantic search
+      if (this.orchestrator) {
+        this.buildProgress = "重建向量索引...";
+        this.addBuildLog("重建向量索引...");
+        this.render();
+        await this.orchestrator.rebuildVectorIndex();
+        this.addBuildLog("  ✅ 向量索引已更新");
       }
 
       // Save last maintenance time
@@ -1327,7 +847,6 @@ ${todoCtx}`;
     const pendingCount = totalCount - doneCount;
     const completionRate = totalCount > 0 ? Math.round((doneCount / totalCount) * 100) : 0;
 
-    // Group by priority (color)
     const priorityLabels: Record<string, string> = {
       "#e53935": "高", "#fb8c00": "中高", "#fdd835": "中", "#43a047": "低",
     };
@@ -1339,7 +858,6 @@ ${todoCtx}`;
       if (t.done) byPriority[key].done++;
     }
 
-    // Group by date (last 30 days)
     const dateMap: Record<string, { total: number; done: number; items: string[] }> = {};
     for (const t of todos) {
       if (!dateMap[t.date]) dateMap[t.date] = { total: 0, done: 0, items: [] };
@@ -1355,7 +873,6 @@ ${todoCtx}`;
       return `### ${d} (${s.done}/${s.total} 完成率 ${rate}%)\n${s.items.map(i => `- ${i}`).join("\n")}`;
     }).join("\n\n");
 
-    // Pending todos
     const pending = todos.filter(t => !t.done).sort((a, b) => a.date.localeCompare(b.date));
     const pendingList = pending.length > 0
       ? `\n## 未完成待办 (${pending.length} 条)\n${pending.slice(0, 50).map(t => `- [${priorityLabels[t.color] || "?"}] ${t.text} (创建: ${t.date}${t.startTime ? `, ${t.startTime}${t.endTime ? `-${t.endTime}` : ""}` : ""})`).join("\n")}`
@@ -1375,6 +892,8 @@ ${Object.values(byPriority).map(p => `- ${p.label}: ${p.total} 条 (完成 ${p.d
 ${dateDetails}
 ${pendingList}`;
   }
+
+  // ── LLM API helpers (used during buildWiki) ───────────────
 
   private async generateSummary(filePath: string, content: string): Promise<string> {
     const truncated = content.length > 8000 ? content.substring(0, 8000) + "\n...(内容已截断)" : content;
@@ -1412,7 +931,6 @@ tags: [标签1, 标签2]
   }
 
   private async generateIndex(summaries: any[]): Promise<string> {
-    // Read a few summaries to understand the content
     const sampleSummaries: Array<{ path: string; firstLines: string }> = [];
     for (const f of summaries.slice(0, 20)) {
       try {
@@ -1502,68 +1020,6 @@ ${hasChatLog ? "\n## 近期对话洞察\n（从最近的用户对话中提炼关
     return this.callDeepSeek(messages);
   }
 
-  private async appendLog(wikiFolder: string, entry: string) {
-    const vault = this.view.plugin.app.vault;
-    const logPath = `${wikiFolder}/log.md`;
-    const now = new Date();
-    const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
-    const logEntry = `\n## [${dateStr}] ${entry}\n`;
-
-    const allFiles = vault.getFiles();
-    const logFile = allFiles.find(f => f.path === logPath);
-    if (logFile) {
-      await vault.append(logFile, logEntry);
-    } else {
-      await vault.create(logPath, `# 操作日志\n\n${logEntry}`);
-    }
-  }
-
-  // ── Chat Log Persistence ─────────────────────────────────
-
-  private chatLogPath(): string {
-    return `${this.settings.wikiFolder}/chat-log.md`;
-  }
-
-  private async appendChatLog(userMsg: string, assistantMsg: string) {
-    const vault = this.view.plugin.app.vault;
-    const path = this.chatLogPath();
-    const now = new Date();
-    const ts = now.toISOString();
-    const entry = `\n## [${ts}] 用户\n${userMsg}\n\n## [${ts}] Agent\n${assistantMsg}\n`;
-
-    const allFiles = vault.getFiles();
-    const logFile = allFiles.find(f => f.path === path);
-    if (logFile) {
-      await vault.append(logFile, entry);
-    } else {
-      await this.ensureWikiDir(this.settings.wikiFolder);
-      await vault.create(path, `# 对话记录\n\n> 这些对话将在下次知识库维护时被消化，然后清空。\n${entry}`);
-    }
-  }
-
-  private async readChatLog(): Promise<string> {
-    const vault = this.view.plugin.app.vault;
-    const path = this.chatLogPath();
-    const allFiles = vault.getFiles();
-    const logFile = allFiles.find(f => f.path === path);
-    if (!logFile) return "";
-    try {
-      return await vault.read(logFile);
-    } catch {
-      return "";
-    }
-  }
-
-  private async clearChatLog() {
-    const vault = this.view.plugin.app.vault;
-    const path = this.chatLogPath();
-    const allFiles = vault.getFiles();
-    const logFile = allFiles.find(f => f.path === path);
-    if (logFile) {
-      await vault.modify(logFile, `# 对话记录\n\n> 上次消化时间: ${new Date().toLocaleString("zh-CN")}\n> 等待新对话...\n`);
-    }
-  }
-
   private async generateUserProfile(chatLog: string): Promise<string> {
     const wikiFolder = this.settings.wikiFolder;
     const vault = this.view.plugin.app.vault;
@@ -1572,9 +1028,7 @@ ${hasChatLog ? "\n## 近期对话洞察\n（从最近的用户对话中提炼关
     const existingFile = allFiles.find(f => f.path === existingPath);
     let existingProfile = "";
     if (existingFile) {
-      try {
-        existingProfile = await vault.read(existingFile);
-      } catch { /* use empty */ }
+      try { existingProfile = await vault.read(existingFile); } catch { /* */ }
     }
 
     const systemPrompt = `你是用户画像分析师。根据最近的对话记录，更新用户画像。
@@ -1637,27 +1091,13 @@ type: profile
   }
 
   private async callDeepSeek(messages: Array<{ role: string; content: string }>): Promise<string> {
-    const data = await this.callDeepSeekRaw(messages, false);
-    return data.choices?.[0]?.message?.content ?? "(空响应)";
-  }
-
-  private async callDeepSeekWithTools(messages: any[]): Promise<any> {
-    return this.callDeepSeekRaw(messages, true);
-  }
-
-  private async callDeepSeekRaw(messages: any[], withTools: boolean): Promise<any> {
     const endpoint = this.settings.apiEndpoint.replace(/\/$/, "");
-    const body: any = {
+    const body = {
       model: this.settings.model,
       messages,
       temperature: 0.7,
       max_tokens: 4096,
     };
-
-    if (withTools) {
-      body.tools = AGENT_TOOLS;
-      body.tool_choice = "auto";
-    }
 
     const response = await fetch(`${endpoint}/chat/completions`, {
       method: "POST",
@@ -1674,121 +1114,23 @@ type: profile
     }
 
     const data = await response.json();
-    if (!data.choices || data.choices.length === 0) {
-      throw new Error("API 返回空响应");
-    }
-    return data;
+    return data.choices?.[0]?.message?.content ?? "(空响应)";
   }
 
-  // ── Streaming API ───────────────────────────────────────
+  private async appendLog(wikiFolder: string, entry: string) {
+    const vault = this.view.plugin.app.vault;
+    const logPath = `${wikiFolder}/log.md`;
+    const now = new Date();
+    const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    const logEntry = `\n## [${dateStr}] ${entry}\n`;
 
-  private async callDeepSeekStream(
-    messages: any[],
-    withTools: boolean,
-    onContent: (text: string) => void,
-  ): Promise<{ content: string; tool_calls: any[] }> {
-    const endpoint = this.settings.apiEndpoint.replace(/\/$/, "");
-    const body: any = {
-      model: this.settings.model,
-      messages,
-      temperature: 0.7,
-      max_tokens: 4096,
-      stream: true,
-    };
-
-    if (withTools) {
-      body.tools = AGENT_TOOLS;
-      body.tool_choice = "auto";
+    const allFiles = vault.getFiles();
+    const logFile = allFiles.find(f => f.path === logPath);
+    if (logFile) {
+      await vault.append(logFile, logEntry);
+    } else {
+      await vault.create(logPath, `# 操作日志\n\n${logEntry}`);
     }
-
-    const response = await fetch(`${endpoint}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${this.apiKey}`,
-      },
-      body: JSON.stringify(body),
-    });
-
-    if (!response.ok) {
-      const err = await response.text();
-      throw new Error(`API 请求失败 (${response.status}): ${err.substring(0, 200)}`);
-    }
-
-    const reader = response.body?.getReader();
-    if (!reader) throw new Error("无法读取流式响应");
-
-    const decoder = new TextDecoder();
-    let content = "";
-    const toolCalls: Map<number, { id: string; name: string; arguments: string }> = new Map();
-    let buffer = "";
-
-    let lastPaint = 0;
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
-
-      let hasContent = false;
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || !trimmed.startsWith("data: ")) continue;
-        const jsonStr = trimmed.slice(6);
-        if (jsonStr === "[DONE]") continue;
-
-        try {
-          const chunk = JSON.parse(jsonStr);
-          const delta = chunk.choices?.[0]?.delta;
-          if (!delta) continue;
-
-          // Content delta
-          if (delta.content) {
-            content += delta.content;
-            hasContent = true;
-          }
-
-          // Tool call deltas
-          if (delta.tool_calls) {
-            for (const tc of delta.tool_calls) {
-              const idx = tc.index ?? 0;
-              if (!toolCalls.has(idx)) {
-                toolCalls.set(idx, { id: "", name: "", arguments: "" });
-              }
-              const entry = toolCalls.get(idx)!;
-              if (tc.id) entry.id = tc.id;
-              if (tc.function?.name) entry.name += tc.function.name;
-              if (tc.function?.arguments) entry.arguments += tc.function.arguments;
-            }
-          }
-        } catch {
-          // skip malformed chunks
-        }
-      }
-
-      // Fire callback with accumulated content, then yield for DOM repaint
-      if (hasContent) {
-        onContent(content);
-        // Yield to event loop at most every 50ms so browser can repaint
-        const now = Date.now();
-        if (now - lastPaint > 50) {
-          lastPaint = now;
-          await new Promise(r => setTimeout(r, 0));
-        }
-      }
-    }
-
-    const toolCallsArr = Array.from(toolCalls.values())
-      .filter(tc => tc.id)
-      .map(tc => ({
-        id: tc.id,
-        type: "function",
-        function: { name: tc.name, arguments: tc.arguments },
-      }));
-
-    return { content, tool_calls: toolCallsArr };
   }
 
   private async ensureWikiDir(dirPath: string) {
