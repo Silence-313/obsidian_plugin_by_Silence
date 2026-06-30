@@ -44,6 +44,33 @@ export interface StreamCallback {
   (content: string): void;
 }
 
+// ── Health ────────────────────────────────────────────────────
+
+export interface AgentHealth {
+  status: "healthy" | "degraded" | "error";
+  initialized: boolean;
+  interactionCount: number;
+  lastError: string | null;
+  lastErrorTime: number | null;
+  consecutiveErrors: number;
+  reentrancyBlocked: number;
+  memoryStats: {
+    episodicCount: number;
+    episodicActive: number;
+    vectorDocCount: number;
+    toolsTracked: number;
+    routerAccuracy: number;
+  };
+  cognitiveHealth: number | null;
+  uptimeMs: number;
+}
+
+// ── Constants ─────────────────────────────────────────────────
+
+const MAX_CONSECUTIVE_ERRORS = 5;
+const LLM_TIMEOUT_MS = 60_000; // 60 second timeout for LLM calls
+const MAX_SYSTEM_PROMPT_CHARS = 8_000;
+
 // ── Tool Definitions (keep compatible with existing AGENT_TOOLS) ──
 
 const AGENT_TOOLS = [
@@ -147,6 +174,13 @@ export class AgentOrchestrator {
   private interactionCount = 0;
   private readonly EVOLUTION_CYCLE_INTERVAL = 10;
   private initialized = false;
+  // Safety: prevent concurrent process() calls
+  private processing = false;
+  private consecutiveErrors = 0;
+  private lastError: string | null = null;
+  private lastErrorTime: number | null = null;
+  private reentrancyBlocked = 0;
+  private readonly startTime = Date.now();
 
   constructor(config: OrchestratorConfig) {
     this.config = config;
@@ -181,11 +215,69 @@ export class AgentOrchestrator {
     this.initialized = true;
   }
 
+  // ── Input Sanitization ─────────────────────────────────────
+
+  /**
+   * Sanitize user input to prevent prompt injection.
+   * Strips markdown code fences and blocks known injection patterns.
+   */
+  private sanitizeInput(text: string): string {
+    // Strip markdown code fences that could leak system instructions
+    let sanitized = text.replace(/```[\s\S]*?```/g, "[code block removed]");
+    // Strip JSON blocks that might contain system prompt attacks
+    sanitized = sanitized.replace(/\{[\s\S]*?"role"\s*:\s*"system"[\s\S]*?\}/gi, "[system prompt block removed]");
+    // Truncate excessively long inputs
+    if (sanitized.length > 4000) {
+      sanitized = sanitized.substring(0, 4000) + "\n...(message truncated)";
+    }
+    return sanitized;
+  }
+
+  // ── Health Check ───────────────────────────────────────────
+
+  /**
+   * Return a comprehensive health snapshot of the agent system.
+   * Useful for monitoring, diagnostics, and UI health indicators.
+   */
+  healthCheck(): AgentHealth {
+    let cognitiveHealth: number | null = null;
+    try {
+      const controller = this.feedbackProcessor.controller;
+      cognitiveHealth = controller.computeHealth(
+        [], this.episodicMemory.count, 0,
+      ).overallHealth;
+    } catch { /* */ }
+
+    return {
+      status: this.consecutiveErrors >= MAX_CONSECUTIVE_ERRORS ? "error"
+        : this.consecutiveErrors > 0 ? "degraded"
+        : "healthy",
+      initialized: this.initialized,
+      interactionCount: this.interactionCount,
+      lastError: this.lastError,
+      lastErrorTime: this.lastErrorTime,
+      consecutiveErrors: this.consecutiveErrors,
+      reentrancyBlocked: this.reentrancyBlocked,
+      memoryStats: {
+        episodicCount: this.episodicMemory.count,
+        episodicActive: this.episodicMemory.activeCount,
+        vectorDocCount: this.vectorStore.documentCount,
+        toolsTracked: this.toolMemory.getAllStats().length,
+        routerAccuracy: this.routerTelemetry.getOverallAccuracy(),
+      },
+      cognitiveHealth,
+      uptimeMs: Date.now() - this.startTime,
+    };
+  }
+
   // ── Main Pipeline ─────────────────────────────────────────
 
   /**
    * Process a user message through the full pipeline:
    *   Router → Memory → LLM → Tools → MemoryWriter → Response
+   *
+   * Thread-safety: prevents concurrent calls via reentrancy guard.
+   * Error recovery: LLM failures degrade gracefully to direct response.
    */
   async process(
     userText: string,
@@ -193,18 +285,30 @@ export class AgentOrchestrator {
     onStream?: StreamCallback,
     onActivity?: (msg: string) => void,
   ): Promise<{ response: string; toolCalls: ToolCallResult[] }> {
+    // Reentrancy guard: prevent concurrent calls from corrupting shared state
+    if (this.processing) {
+      this.reentrancyBlocked++;
+      return {
+        response: "系统正忙，请稍后再试。",
+        toolCalls: [],
+      };
+    }
+    this.processing = true;
+
     const startTime = Date.now();
     const toolCalls: ToolCallResult[] = [];
+    const sanitizedText = this.sanitizeInput(userText);
 
+    try {
     // 1. Push to working memory
-    this.workingMemory.push({ role: "user", content: userText, timestamp: Date.now() });
+    this.workingMemory.push({ role: "user", content: sanitizedText, timestamp: Date.now() });
 
     // 2. Tool Router: decide which tool (with adaptive telemetry)
-    const route = routeTool(userText, this.routerTelemetry);
+    const route = routeTool(sanitizedText, this.routerTelemetry);
     onActivity?.(`路由决策: ${route.tool} (置信度 ${Math.round(route.confidence * 100)}%)`);
 
     // 3. Memory Retrieval Layer (including concept reasoning)
-    const memoryContext = await this.retrieveMemory(userText, route);
+    const memoryContext = await this.retrieveMemory(sanitizedText, route);
     if (memoryContext.conceptReasoning) {
       onActivity?.("概念推理完成");
     }
@@ -213,53 +317,70 @@ export class AgentOrchestrator {
     const systemPrompt = this.buildSystemPrompt(memoryContext);
 
     // 5. Build messages for LLM
-    const messages = this.buildLLMMessages(systemPrompt, chatHistory, userText);
+    const messages = this.buildLLMMessages(systemPrompt, chatHistory, sanitizedText);
 
     // 6. Agent loop: probe → maybe tools → stream
     let response: string;
+    let llmFailed = false;
+    let llmToolCalls: Array<{ id: string; function: { name: string; arguments: string } }> = [];
 
-    // First, probe for tool calls (non-streaming)
-    const probeResp = await this.callLLM(messages, true);
-    const probeChoice = probeResp.choices?.[0];
-    const llmToolCalls = probeChoice?.message?.tool_calls ?? [];
-    const probeText = probeChoice?.message?.content ?? "";
+    try {
+      // First, probe for tool calls (non-streaming)
+      const probeResp = await this.callLLMWithTimeout(messages, true) as any;
+      const probeChoice = probeResp.choices?.[0];
+      llmToolCalls = probeChoice?.message?.tool_calls ?? [];
+      const probeText = probeChoice?.message?.content ?? "";
 
-    if (llmToolCalls.length > 0) {
-      // Execute tools locally
-      messages.push({ role: "assistant", content: probeText, tool_calls: llmToolCalls });
+      if (llmToolCalls.length > 0) {
+        // Execute tools locally
+        messages.push({ role: "assistant", content: probeText, tool_calls: llmToolCalls });
 
-      for (const tc of llmToolCalls) {
-        let args: Record<string, any> = {};
-        try { args = JSON.parse(tc.function.arguments || "{}"); } catch { /* */ }
-        onActivity?.(`执行工具: ${tc.function.name}`);
+        for (const tc of llmToolCalls) {
+          let args: Record<string, unknown> = {};
+          try { args = JSON.parse(tc.function.arguments || "{}"); } catch { /* */ }
+          onActivity?.(`执行工具: ${tc.function.name}`);
 
-        const toolStart = Date.now();
-        const result = await this.executeToolLocal(tc.function.name, args);
-        const latencyMs = Date.now() - toolStart;
+          const toolStart = Date.now();
+          const result = await this.executeToolLocal(tc.function.name, args);
+          const latencyMs = Date.now() - toolStart;
 
-        toolCalls.push({
-          toolName: tc.function.name,
-          success: !result.startsWith("Error:"),
-          result,
-          latencyMs,
-        });
+          toolCalls.push({
+            toolName: tc.function.name,
+            success: !result.startsWith("Error:"),
+            result,
+            latencyMs,
+          });
 
-        // Record tool usage
-        this.toolMemory.recordCall(
-          tc.function.name,
-          { success: !result.startsWith("Error:"), latencyMs, responseQuality: 0.7 },
-          userText,
-          route.tool,
-        );
+          // Record tool usage
+          this.toolMemory.recordCall(
+            tc.function.name,
+            { success: !result.startsWith("Error:"), latencyMs, responseQuality: 0.7 },
+            sanitizedText,
+            route.tool,
+          );
 
-        messages.push({ role: "tool", tool_call_id: tc.id, content: result });
+          messages.push({ role: "tool", tool_call_id: tc.id, content: result });
+        }
+
+        // Stream final summary (no tools needed for this call)
+        response = await this.streamLLMWithTimeout(messages, false, onStream);
+      } else {
+        // No tools needed, stream directly
+        response = await this.streamLLMWithTimeout(messages, false, onStream);
       }
+    } catch (llmError: any) {
+      // LLM failure — graceful degradation
+      llmFailed = true;
+      this.consecutiveErrors++;
+      this.lastError = llmError?.message || String(llmError);
+      this.lastErrorTime = Date.now();
+      response = `抱歉，AI 服务暂时不可用（${llmError?.message?.substring?.(0, 80) || "网络错误"}）。请稍后重试或检查 API 配置。`;
+      onActivity?.(`LLM 调用失败: ${this.lastError}`);
+    }
 
-      // Stream final summary (no tools needed for this call)
-      response = await this.streamLLM(messages, false, onStream);
-    } else {
-      // No tools needed, stream directly
-      response = await this.streamLLM(messages, false, onStream);
+    // Reset error counter on success
+    if (!llmFailed) {
+      this.consecutiveErrors = 0;
     }
 
     // Record for "direct_answer" in tool memory
@@ -277,7 +398,7 @@ export class AgentOrchestrator {
 
     // 8. Memory Writer: analyze and persist
     const decisions = this.memoryWriter.analyze({
-      userMessage: userText,
+      userMessage: sanitizedText,
       assistantResponse: response,
       toolUsed: route.tool,
       toolResult: toolCalls.map(tc => tc.result).join("\n"),
@@ -285,7 +406,7 @@ export class AgentOrchestrator {
       timestamp: Date.now(),
     });
     this.memoryWriter.commit(decisions, {
-      userMessage: userText,
+      userMessage: sanitizedText,
       assistantResponse: response,
       toolUsed: route.tool,
       toolResult: toolCalls.map(tc => tc.result).join("\n"),
@@ -295,7 +416,7 @@ export class AgentOrchestrator {
 
     // 9. Router Telemetry: record routing decision with outcome
     this.routerTelemetry.recordRouting({
-      query: userText,
+      query: sanitizedText,
       selectedTool: route.tool,
       confidence: route.confidence,
       executionSuccess: toolCalls.length === 0 || toolCalls.every(tc => tc.success),
@@ -309,7 +430,7 @@ export class AgentOrchestrator {
         .filter(r => response.includes(r.sourcePath) || response.includes(r.content.substring(0, 50)))
         .map(r => r.sourcePath);
       this.ragFeedback.recordRetrieval({
-        query: userText,
+        query: sanitizedText,
         retrievedDocs: memoryContext.wikiResults.map(r => r.sourcePath),
         usedDocs: usedDocs.length > 0 ? usedDocs : memoryContext.wikiResults.slice(0, 1).map(r => r.sourcePath),
         answerQuality: toolCalls.length > 0 && toolCalls.every(tc => tc.success) ? 0.8 : 0.6,
@@ -327,7 +448,7 @@ export class AgentOrchestrator {
     if (this.lastReasoningResult) {
       const onFb = onActivity;
       if (onFb) onFb("认知反馈处理中...");
-      await this.feedbackProcessor.process(this.lastReasoningResult, userText);
+      await this.feedbackProcessor.process(this.lastReasoningResult, sanitizedText);
       this.lastReasoningResult = null;
     }
 
@@ -358,6 +479,10 @@ export class AgentOrchestrator {
     await this.saveMemoryState();
 
     return { response, toolCalls };
+    } finally {
+      // Always release the reentrancy guard
+      this.processing = false;
+    }
   }
 
   // ── Evolution Cycle ───────────────────────────────────────
@@ -559,8 +684,8 @@ export class AgentOrchestrator {
       ? `\n${memory.profileContext}`
       : "";
 
-    // Simplified prompt: role definition + tool schemas only, NO routing rules
-    return `你是用户的个人 AI 助手，拥有工具调用能力。用中文回复，清晰简洁。
+    // Build prompt with length guard
+    let prompt = `你是用户的个人 AI 助手，拥有工具调用能力。用中文回复，清晰简洁。
 
 ## ${timeContext}
 ${profileSection}
@@ -577,6 +702,25 @@ ${memory.conceptReasoning}
 - 使用可用工具获取实时数据（时间、待办、搜索等）
 - 不要编造不存在的内容
 - 不要使用 Markdown 表格`;
+
+    // Truncate if exceeds character limit to stay within model context window
+    if (prompt.length > MAX_SYSTEM_PROMPT_CHARS) {
+      // Preserve rules section, truncate from the middle (wiki/episodic sections)
+      const rulesSection = "\n## 规则\n";
+      const rulesIdx = prompt.lastIndexOf(rulesSection);
+      if (rulesIdx > 0) {
+        const prefix = prompt.substring(0, prompt.indexOf("\n## 知识库", prompt.indexOf("## ")));
+        const suffix = prompt.substring(rulesIdx);
+        const available = MAX_SYSTEM_PROMPT_CHARS - prefix.length - suffix.length - 100;
+        if (available > 200) {
+          const wikiTruncated = wikiSection.substring(0, Math.min(wikiSection.length, available));
+          prompt = prefix + wikiTruncated + "\n\n...(上下文已截断以适配模型限制)\n" + suffix;
+        } else {
+          prompt = prompt.substring(0, MAX_SYSTEM_PROMPT_CHARS - 50) + "\n...(上下文已截断)";
+        }
+      }
+    }
+    return prompt;
   }
 
   private buildLLMMessages(
@@ -742,6 +886,138 @@ ${memory.conceptReasoning}
 
   // ── LLM API Calls ─────────────────────────────────────────
 
+  /**
+   * Call LLM with a configurable timeout. Wraps fetch with AbortController.
+   */
+  private async callLLMWithTimeout(messages: unknown[], withTools: boolean): Promise<unknown> {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS);
+
+    try {
+      const endpoint = this.config.apiEndpoint.replace(/\/$/, "");
+      const body: Record<string, unknown> = {
+        model: this.config.model,
+        messages,
+        temperature: 0.7,
+        max_tokens: 4096,
+      };
+      if (withTools) {
+        body.tools = AGENT_TOOLS;
+        body.tool_choice = "auto";
+      }
+
+      const response = await fetch(`${endpoint}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${this.config.getApiKey()}`,
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        const err = await response.text();
+        throw new Error(`API 请求失败 (${response.status}): ${err.substring(0, 200)}`);
+      }
+      const data = await response.json();
+      if (!data.choices || data.choices.length === 0) {
+        throw new Error("API 返回空响应");
+      }
+      return data;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  /**
+   * Stream LLM response with timeout.
+   */
+  private async streamLLMWithTimeout(
+    messages: unknown[],
+    withTools: boolean,
+    onChunk?: StreamCallback,
+  ): Promise<string> {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS);
+
+    try {
+      const endpoint = this.config.apiEndpoint.replace(/\/$/, "");
+      const body: Record<string, unknown> = {
+        model: this.config.model,
+        messages,
+        temperature: 0.7,
+        max_tokens: 4096,
+        stream: true,
+      };
+      if (withTools) {
+        body.tools = AGENT_TOOLS;
+        body.tool_choice = "auto";
+      }
+
+      const response = await fetch(`${endpoint}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${this.config.getApiKey()}`,
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        const err = await response.text();
+        throw new Error(`API 请求失败 (${response.status}): ${err.substring(0, 200)}`);
+      }
+
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error("无法读取流式响应");
+
+      const decoder = new TextDecoder();
+      let content = "";
+      let buffer = "";
+      let lastPaint = 0;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        let hasContent = false;
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || !trimmed.startsWith("data: ")) continue;
+          const jsonStr = trimmed.slice(6);
+          if (jsonStr === "[DONE]") continue;
+          try {
+            const chunk = JSON.parse(jsonStr);
+            const delta = chunk.choices?.[0]?.delta;
+            if (delta?.content) {
+              content += delta.content;
+              hasContent = true;
+            }
+          } catch { /* skip malformed SSE chunks */ }
+        }
+
+        if (hasContent && onChunk) {
+          onChunk(content);
+          const now = Date.now();
+          if (now - lastPaint > 50) {
+            lastPaint = now;
+            await new Promise(r => setTimeout(r, 0));
+          }
+        }
+      }
+
+      return content;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  // Keep old methods for backward compatibility
   private async callLLM(messages: any[], withTools: boolean): Promise<any> {
     const endpoint = this.config.apiEndpoint.replace(/\/$/, "");
     const body: any = {

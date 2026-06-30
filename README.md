@@ -107,6 +107,22 @@ npm run lint    # TypeScript 类型检查
 
 配合 [hot-reload](https://github.com/pjeby/hot-reload) 插件实现修改后自动重载（需在插件目录放置 `.hotreload` 标记文件）。
 
+### 测试
+
+纯 TypeScript 测试框架，无外部依赖，通过 `npx tsx` 运行：
+
+```bash
+npx tsx src/tests/unit_test_agent.ts          # 单元测试 — 176 个断言，13 个模块
+npx tsx src/tests/integration_test_agent.ts   # 集成测试 — 54 个断言，9 个流程
+npx tsx src/tests/e2e_test_agent.ts           # E2E 测试 — 7 场景 + 6 稳定性检查
+```
+
+| 套件 | 覆盖 |
+|------|------|
+| 单元 | tool_router, vector_wiki_store, working_memory, episodic_memory, user_profile, tool_memory, memory_writer, concept_extractor, concept_graph_builder, concept_reasoner, drift_controller, router_telemetry, input_sanitization |
+| 集成 | Router→Wiki, MemoryWriter→Stores, Concept Extraction Pipeline, Graph→Reasoning, Feedback→Policy, Router+Telemetry Adaptive |
+| E2E | Todo 操作、技术查询、记忆召回、时间查询、系统稳定性 |
+
 ## 使用方式
 
 1. 启用插件后，Obsidian 启动时自动打开首页

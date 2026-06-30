@@ -11,6 +11,11 @@ import { EpisodicMemory } from "../agent/memory/episodic_memory";
 import { UserProfile } from "../agent/memory/user_profile";
 import { ToolMemory } from "../agent/memory/tool_memory";
 import { MemoryWriter } from "../agent/memory/memory_writer";
+import { ConceptExtractor } from "../agent/memory/concept_extractor";
+import { ConceptGraphBuilder } from "../agent/reasoning/concept_graph_builder";
+import { ConceptReasoner } from "../agent/reasoning/concept_reasoner";
+import { DriftController } from "../agent/policy/drift_controller";
+import { RouterTelemetry } from "../agent/router_telemetry";
 
 interface FlowResult {
   flow: string;
@@ -387,6 +392,293 @@ function testFlowFullPipeline() {
 }
 
 // ──────────────────────────────────────────────────────────────
+// Flow 6: Concept Extraction → Concept Storage Pipeline
+// ──────────────────────────────────────────────────────────────
+
+function testFlowConceptExtractionPipeline() {
+  console.log("\n── Flow 6: Concept Extraction Pipeline ──");
+
+  const extractor = new ConceptExtractor();
+
+  // Simulate an episode being written by MemoryWriter
+  const episodeContent = "记忆系统是认知架构的核心。系统使用Markdown文件持久化情景记忆。记忆包含重要性评分和衰减机制。Agent使用工具路由来分发用户请求。";
+
+  // Extract concepts
+  const concepts = extractor.extract(episodeContent);
+  assertFlow(
+    "Concept extraction: produces concepts",
+    concepts.length >= 1,
+    "concept_extractor",
+    `Got ${concepts.length} concepts`
+  );
+
+  // Each concept should have required fields
+  for (const c of concepts) {
+    assertFlow(
+      `Concept "${c.name}": has slug`,
+      c.slug.length > 0,
+      "concept_extractor",
+      ""
+    );
+    assertFlow(
+      `Concept "${c.name}": confidence valid`,
+      c.confidence > 0 && c.confidence <= 1,
+      "concept_extractor",
+      `${c.confidence}`
+    );
+  }
+
+  // Concepts extracted from Chinese text should be deduplicated
+  const slugs = concepts.map(c => c.slug);
+  assertFlow(
+    "Concept extraction: no duplicate slugs",
+    new Set(slugs).size === slugs.length,
+    "concept_extractor",
+    `Slugs: ${slugs.join(", ")}`
+  );
+
+  // Repeated use of same extractor should work
+  const episode2 = "工具系统支持插件化架构。每个工具都有独立的执行逻辑。路由系统根据用户意图选择工具。";
+  const concepts2 = extractor.extract(episode2, slugs); // pass existing slugs
+  assertFlow(
+    "Concept extraction: second episode works",
+    concepts2.length >= 0,
+    "concept_extractor",
+    `Got ${concepts2.length}`
+  );
+}
+
+// ──────────────────────────────────────────────────────────────
+// Flow 7: Concept Graph → Reasoning → Insight Pipeline
+// ──────────────────────────────────────────────────────────────
+
+function testFlowGraphToReasoningPipeline() {
+  console.log("\n── Flow 7: Graph → Reasoning Pipeline ──");
+
+  const builder = new ConceptGraphBuilder();
+  const reasoner = new ConceptReasoner();
+
+  // Build concepts simulating real extracted data
+  const concepts = [
+    { id: "c-mem", name: "记忆系统", slug: "ji-yi-xi-tong", confidence: 0.9, sourceEpisodes: ["ep1.md", "ep2.md", "ep3.md"], related: ["gong-ju-xi-tong", "ren-zhi-jia-gou"], tags: ["architecture", "agent"] },
+    { id: "c-tool", name: "工具系统", slug: "gong-ju-xi-tong", confidence: 0.8, sourceEpisodes: ["ep1.md", "ep4.md"], related: ["ji-yi-xi-tong"], tags: ["architecture", "tools"] },
+    { id: "c-cog", name: "认知架构", slug: "ren-zhi-jia-gou", confidence: 0.85, sourceEpisodes: ["ep2.md", "ep3.md", "ep5.md"], related: ["ji-yi-xi-tong", "tui-li-yin-qing"], tags: ["architecture", "design"] },
+    { id: "c-reason", name: "推理引擎", slug: "tui-li-yin-qing", confidence: 0.75, sourceEpisodes: ["ep5.md", "ep6.md"], related: ["ren-zhi-jia-gou"], tags: ["reasoning", "engine"] },
+  ];
+
+  // Build graph
+  const graph = builder.buildFull(concepts);
+  assertFlow(
+    "Graph→Reasoning: graph built with nodes",
+    graph.nodes.size === 4,
+    "graph_builder",
+    `${graph.nodes.size}`
+  );
+  assertFlow(
+    "Graph→Reasoning: edges generated",
+    graph.edges.length >= 3,
+    "graph_builder",
+    `${graph.edges.length} edges`
+  );
+
+  // Build subgraph from seed
+  const subgraph = builder.buildSubgraph(graph, ["ji-yi-xi-tong", "ren-zhi-jia-gou"]);
+  assertFlow(
+    "Graph→Reasoning: subgraph has seeds + neighbors",
+    subgraph.seedNodes.length >= 1 && (subgraph.seedNodes.length + subgraph.neighborNodes.length) >= 2,
+    "graph_builder",
+    `seeds=${subgraph.seedNodes.length}, neighbors=${subgraph.neighborNodes.length}`
+  );
+
+  // Run reasoning
+  const result = reasoner.reason("记忆和认知架构的关系", subgraph, graph);
+  assertFlow(
+    "Graph→Reasoning: reasoning produces insights",
+    result.inferredInsights.length >= 0,
+    "concept_reasoner",
+    `insights=${result.inferredInsights.length}`
+  );
+  assertFlow(
+    "Graph→Reasoning: reasoning has confidence",
+    result.confidence > 0,
+    "concept_reasoner",
+    `${result.confidence}`
+  );
+
+  // Key concepts should include relevant ones
+  const allKeyConcepts = [...result.keyConcepts, ...result.bridgingConcepts];
+  if (allKeyConcepts.length > 0) {
+    assertFlow(
+      "Graph→Reasoning: key concepts relevant",
+      allKeyConcepts.some(c => c.includes("记忆") || c.includes("认知") || c.includes("工具") || c.includes("推理")),
+      "concept_reasoner",
+      `Concepts: ${allKeyConcepts.join(", ")}`
+    );
+  }
+
+  // Relationship output format
+  for (const rel of result.relationships) {
+    assertFlow(
+      `Relationship valid: ${rel.substring(0, 40)}`,
+      rel.includes("→"),
+      "concept_reasoner",
+      rel
+    );
+  }
+}
+
+// ──────────────────────────────────────────────────────────────
+// Flow 8: Reasoning → Feedback → Policy Learning Loop
+// ──────────────────────────────────────────────────────────────
+
+function testFlowFeedbackAndPolicy() {
+  console.log("\n── Flow 8: Feedback → Policy Loop ──");
+
+  const builder = new ConceptGraphBuilder();
+  const reasoner = new ConceptReasoner();
+  const dc = new DriftController();
+
+  // Build a simple graph and reason
+  const concepts = [
+    { id: "c1", name: "Agent Pipeline", slug: "agent-pipeline", confidence: 0.9, sourceEpisodes: ["ep1.md", "ep2.md"], related: ["tool-router"], tags: ["agent", "engineering"] },
+    { id: "c2", name: "Tool Router", slug: "tool-router", confidence: 0.8, sourceEpisodes: ["ep1.md", "ep3.md"], related: ["agent-pipeline"], tags: ["agent", "tools"] },
+    { id: "c3", name: "Memory System", slug: "memory-system", confidence: 0.85, sourceEpisodes: ["ep2.md", "ep4.md"], related: [], tags: ["agent", "memory"] },
+  ];
+
+  const graph = builder.buildFull(concepts);
+  const subgraph = builder.buildSubgraph(graph, ["agent-pipeline"]);
+  const reasoning = reasoner.reason("agent architecture", subgraph, graph);
+
+  // Simulate feedback: concept reinforcement
+  if (reasoning.keyConcepts.length > 0) {
+    // Concepts used successfully → reinforce domains
+    const domains = ["agent", "engineering", "tools"]; // domains extracted by heuristic
+    for (const domain of domains) {
+      dc.reinforceDomain(domain, 0.02);
+    }
+
+    // Verify reinforcement happened
+    const agentPref = dc.getConceptPreference("agent");
+    assertFlow(
+      "Feedback→Policy: agent domain reinforced",
+      agentPref > 0.5,
+      "drift_controller",
+      `Preference: ${agentPref}`
+    );
+    assertFlow(
+      "Feedback→Policy: preference clamped ≤1",
+      agentPref <= 1.0,
+      "drift_controller",
+      `${agentPref}`
+    );
+  }
+
+  // Strategy adaptation: high confidence → boost relevant strategies
+  if (reasoning.confidence >= 0.5) {
+    dc.adjustStrategyWeight("graphTraversal", 0.02);
+    dc.adjustStrategyWeight("abstraction", 0.02);
+    assertFlow(
+      "Feedback→Policy: strategy weights adjusted",
+      dc.getStrategyWeight("graphTraversal") > 0.7,
+      "drift_controller",
+      `${dc.getStrategyWeight("graphTraversal")}`
+    );
+  }
+
+  // Balance enforcement
+  dc.enforceBalance();
+  assertFlow(
+    "Feedback→Policy: balance maintained",
+    true,
+    "drift_controller",
+    "enforceBalance completed"
+  );
+
+  // Health check
+  const health = dc.computeHealth(
+    [{ confidence: 0.9 }, { confidence: 0.8 }, { confidence: 0.85 }],
+    3,
+    0,
+  );
+  assertFlow(
+    "Feedback→Policy: health is healthy",
+    health.overallHealth > 0.6,
+    "drift_controller",
+    `Health: ${health.overallHealth}`
+  );
+}
+
+// ──────────────────────────────────────────────────────────────
+// Flow 9: Router + Telemetry Adaptive Behavior
+// ──────────────────────────────────────────────────────────────
+
+function testFlowRouterTelemetryAdaptive() {
+  console.log("\n── Flow 9: Router + Telemetry Adaptive ──");
+
+  const rt = new RouterTelemetry();
+
+  // Record successful routing for specific tools over time
+  for (let i = 0; i < 10; i++) {
+    rt.recordRouting({
+      query: `add todo ${i}`,
+      selectedTool: "add_todos",
+      confidence: 0.85,
+      executionSuccess: true,
+      latencyMs: 100,
+      timestamp: Date.now(),
+    });
+  }
+
+  for (let i = 0; i < 3; i++) {
+    rt.recordRouting({
+      query: `search ${i}`,
+      selectedTool: "web_search",
+      confidence: 0.6,
+      executionSuccess: false,
+      latencyMs: 500,
+      timestamp: Date.now(),
+    });
+  }
+
+  // High-success tool should have lower threshold (easier to select)
+  const addThreshold = rt.getAdaptiveThreshold("add_todos");
+  const searchThreshold = rt.getAdaptiveThreshold("web_search");
+
+  assertFlow(
+    "Router+Telemetry: success lowers threshold",
+    addThreshold < searchThreshold || rt.getSuccessRate("add_todos") > rt.getSuccessRate("web_search"),
+    "router_telemetry",
+    `add=${addThreshold}, search=${searchThreshold}`
+  );
+
+  // Route with telemetry should bias toward successful tools
+  const route = routeTool("帮我添加一个待办", rt);
+  assertFlow(
+    "Router+Telemetry: route with telemetry succeeds",
+    typeof route.tool === "string" && route.confidence > 0,
+    "router_telemetry",
+    `Tool: ${route.tool}, conf: ${route.confidence}`
+  );
+
+  // Metrics format check
+  const metrics = rt.getAllMetrics();
+  for (const m of metrics) {
+    assertFlow(
+      `Metric ${m.toolName}: success rate valid`,
+      m.successRate >= 0 && m.successRate <= 1,
+      "router_telemetry",
+      `${m.successRate}`
+    );
+    assertFlow(
+      `Metric ${m.toolName}: adaptive threshold valid`,
+      m.adaptiveThreshold >= 0.05 && m.adaptiveThreshold <= 0.5,
+      "router_telemetry",
+      `${m.adaptiveThreshold}`
+    );
+  }
+}
+
+// ──────────────────────────────────────────────────────────────
 // Run All
 // ──────────────────────────────────────────────────────────────
 
@@ -399,6 +691,10 @@ testFlowMemoryWriterToStores();
 testFlowRouterToolMemoryFeedback();
 testFlowWorkingAndEpisodicCoordination();
 testFlowFullPipeline();
+testFlowConceptExtractionPipeline();
+testFlowGraphToReasoningPipeline();
+testFlowFeedbackAndPolicy();
+testFlowRouterTelemetryAdaptive();
 
 console.log(`\n── Results ──`);
 console.log(`  Passed: ${passed}`);

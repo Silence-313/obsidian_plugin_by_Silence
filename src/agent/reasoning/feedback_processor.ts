@@ -366,8 +366,9 @@ export class FeedbackProcessor {
   async persistPolicy(): Promise<void> {
     try {
       this.driftController.markUpdated();
-      const policyJson = JSON.parse(this.driftController.serialize());
-      await this.markdownStore.saveCognitivePolicy(policyJson);
+      await this.markdownStore.saveCognitivePolicy(
+        this.driftController.currentPolicy as unknown as Record<string, unknown>,
+      );
     } catch {
       // Policy persistence is best-effort
     }
