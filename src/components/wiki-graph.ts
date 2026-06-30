@@ -383,7 +383,7 @@ export class WikiGraphComponent {
 
     const area = this.cardW * this.cardH;
     const k = Math.sqrt(area / n); // ideal edge length (Fruchterman-Reingold)
-    const strength = 0.12; // scales repulsion & attraction equally, keeps balance at k
+    const strength = 0.03; // scales repulsion & attraction equally, keeps balance at k
 
     // Repulsion (all pairs) — Coulomb-like, decays with distance
     for (let i = 0; i < n; i++) {
@@ -429,20 +429,17 @@ export class WikiGraphComponent {
       b.vy -= fy;
     }
 
-    // Center gravity (shift center down to account for 60px toolbar)
+    // Center gravity — strong pull toward viewport center
     const cx = this.cardW / 2;
     const cy = this.cardH / 2 + 30;
-    const maxSpeed = 10 * this.s; // prevent runaway nodes, scale with viewport
+    const maxSpeed = 10 * this.s;
     for (const node of this.nodes) {
-      if (node.id === this.dragging) continue; // dragged node locked to cursor
-      // Stronger center pull
+      if (node.id === this.dragging) continue;
+      // Strong center gravity: proportional to distance from center
       const dxc = cx - node.x;
       const dyc = cy - node.y;
-      const distC = Math.sqrt(dxc * dxc + dyc * dyc);
-      if (distC > k * 2) {
-        node.vx += dxc * 0.005 * this.s;
-        node.vy += dyc * 0.005 * this.s;
-      }
+      node.vx += dxc * 0.05;
+      node.vy += dyc * 0.05;
       // Clamp velocity
       const speed = Math.sqrt(node.vx * node.vx + node.vy * node.vy);
       if (speed > maxSpeed) {
@@ -455,12 +452,6 @@ export class WikiGraphComponent {
       // Apply
       node.x += node.vx;
       node.y += node.vy;
-      // Clamp to viewport bounds (reserve top 30px for toolbar)
-      const padX = node.radius + 4;
-      const padTop = node.radius + 60;
-      const padBottom = node.radius + 4;
-      node.x = Math.max(padX, Math.min(this.cardW - padX, node.x));
-      node.y = Math.max(padTop, Math.min(this.cardH - padBottom, node.y));
     }
   }
 

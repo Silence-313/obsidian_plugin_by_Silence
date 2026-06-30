@@ -984,30 +984,39 @@ ${memory.conceptReasoning}
         const query = args.query?.trim();
         if (!query) return JSON.stringify({ error: "query 不能为空" });
         const numResults = Math.min(args.num_results || 5, 10);
+
+        // Strategy 1: Bing HTML scrape (accessible in China, no API key needed)
         try {
-          const apiUrl = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`;
-          const apiResp = await this.config.requestUrl({ url: apiUrl });
-          if (apiResp.status === 200) {
-            const data = apiResp.json;
+          const bingUrl = `https://www.bing.com/search?q=${encodeURIComponent(query)}&setlang=zh-cn`;
+          const resp = await this.config.requestUrl({ url: bingUrl });
+          if (resp.status === 200) {
+            const html = resp.text;
             const results: Array<{ title: string; snippet: string; url: string }> = [];
-            if (data.AbstractText) {
-              results.push({ title: data.Heading || query, snippet: (data.AbstractText as string).substring(0, 500), url: data.AbstractURL || "" });
-            }
-            const collectTopics = (ts: any[]) => {
-              for (const t of ts) {
-                if (results.length >= numResults) break;
-                if (t.Text) {
-                  const parts = (t.Text as string).split(" - ");
-                  results.push({ title: (parts[0] || t.Text).substring(0, 120), snippet: (t.Text as string).substring(0, 300), url: t.FirstURL || "" });
-                }
-                if (t.Topics) collectTopics(t.Topics);
+            // Bing search result blocks: <li class="b_algo">
+            const blockRe = /<li class="b_algo"[^>]*>([\s\S]*?)<\/li>/gi;
+            let blockMatch;
+            while ((blockMatch = blockRe.exec(html)) !== null && results.length < numResults) {
+              const block = blockMatch[1];
+              // Title + URL from <h2><a href="...">title</a></h2>
+              const titleMatch = block.match(/<h2[^>]*><a[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a><\/h2>/i);
+              if (!titleMatch) continue;
+              const url = titleMatch[1];
+              const title = titleMatch[2].replace(/<[^>]+>/g, "").trim();
+              // Snippet from <p> or <div class="b_caption">
+              const snippetMatch = block.match(/<p[^>]*>([\s\S]*?)<\/p>/i)
+                || block.match(/<div class="b_caption"[^>]*>[\s\S]*?<p[^>]*>([\s\S]*?)<\/p>/i);
+              const snippet = snippetMatch
+                ? snippetMatch[1].replace(/<[^>]+>/g, "").trim().substring(0, 300)
+                : "";
+              if (title && url) {
+                results.push({ title: title.substring(0, 120), snippet, url });
               }
-            };
-            collectTopics(data.RelatedTopics || []);
-            if (results.length > 0) return JSON.stringify({ query, resultCount: results.length, results }, null, 2);
+            }
+            if (results.length > 0) return JSON.stringify({ query, resultCount: results.length, results, provider: "bing" }, null, 2);
           }
-        } catch { /* fall through */ }
-        // HTML fallback
+        } catch { /* fall through to next strategy */ }
+
+        // Strategy 2: DuckDuckGo HTML fallback
         try {
           const htmlUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
           const htmlResp = await this.config.requestUrl({ url: htmlUrl });
@@ -1023,9 +1032,10 @@ ${memory.conceptReasoning}
               const uddgMatch = match[1].match(/uddg=(https?%3A[^&]+)/);
               results.push({ title: rawTitle.substring(0, 120), snippet: rawSnippet.substring(0, 300), url: uddgMatch ? decodeURIComponent(uddgMatch[1]) : match[1] });
             }
-            if (results.length > 0) return JSON.stringify({ query, resultCount: results.length, results }, null, 2);
+            if (results.length > 0) return JSON.stringify({ query, resultCount: results.length, results, provider: "duckduckgo" }, null, 2);
           }
         } catch { /* fall through */ }
+
         return JSON.stringify({ query, message: "未找到搜索结果", results: [] });
       }
 
