@@ -157,6 +157,72 @@ export class TodoAddModal extends Modal {
   }
 }
 
+export class NamePromptModal extends Modal {
+  private onSubmit: (name: string) => void;
+  private title: string;
+  private placeholder: string;
+
+  constructor(app: App, title: string, placeholder: string, onSubmit: (name: string) => void) {
+    super(app);
+    this.title = title;
+    this.placeholder = placeholder;
+    this.onSubmit = onSubmit;
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+
+    contentEl.createEl("h3", { text: this.title });
+
+    const input = contentEl.createEl("input", {
+      type: "text",
+      placeholder: this.placeholder,
+    });
+    input.style.cssText = `
+      width: 100%;
+      padding: 8px 12px;
+      font-size: 14px;
+      border: 1px solid var(--background-modifier-border);
+      border-radius: 6px;
+      background: var(--background-modifier-hover);
+      color: var(--text-normal);
+      outline: none;
+      font-family: inherit;
+      margin-bottom: 16px;
+      box-sizing: border-box;
+    `;
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") this.confirm(input.value.trim());
+      if (e.key === "Escape") this.close();
+    });
+    input.focus();
+
+    const btnRow = contentEl.createEl("div");
+    btnRow.style.cssText = "display: flex; justify-content: flex-end; gap: 8px;";
+
+    btnRow.createEl("button", { text: "取消" }, el => {
+      el.style.cssText = "padding:6px 16px; font-size:14px; border:1px solid var(--background-modifier-border); border-radius:4px; background:transparent; color:var(--text-muted); cursor:pointer;";
+      el.addEventListener("click", () => this.close());
+    });
+
+    btnRow.createEl("button", { text: "确定" }, el => {
+      el.style.cssText = "padding:6px 16px; font-size:14px; border:none; border-radius:4px; background:var(--interactive-accent); color:var(--text-on-accent); cursor:pointer;";
+      el.addEventListener("click", () => this.confirm(input.value.trim()));
+    });
+  }
+
+  private confirm(name: string) {
+    if (!name) return;
+    this.onSubmit(name);
+    this.close();
+  }
+
+  onClose() {
+    this.contentEl.empty();
+  }
+}
+
 export class DesktopFolderModal extends Modal {
   private onSubmit: (path: string) => void;
   private currentPath: string;

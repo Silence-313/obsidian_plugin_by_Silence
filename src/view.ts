@@ -349,6 +349,28 @@ export default class HomepageView extends ItemView {
                     font-family: inherit;
                     white-space: nowrap;
                   ">⚙ 设置</button>
+                  <button id="desktop-newfolder-btn-${i}" style="
+                    background: transparent;
+                    border: 1px solid var(--background-modifier-border);
+                    border-radius: 4px;
+                    color: var(--text-muted);
+                    cursor: pointer;
+                    font-size: 11px;
+                    padding: 2px 6px;
+                    font-family: inherit;
+                    white-space: nowrap;
+                  " title="新建文件夹">📁+</button>
+                  <button id="desktop-newfile-btn-${i}" style="
+                    background: transparent;
+                    border: 1px solid var(--background-modifier-border);
+                    border-radius: 4px;
+                    color: var(--text-muted);
+                    cursor: pointer;
+                    font-size: 11px;
+                    padding: 2px 6px;
+                    font-family: inherit;
+                    white-space: nowrap;
+                  " title="新建 Markdown 文件">📝+</button>
                   <button id="desktop-add-btn-${i}" style="
                     background: transparent;
                     border: 1px solid var(--background-modifier-border);

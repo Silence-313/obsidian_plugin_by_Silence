@@ -187,6 +187,161 @@ export class DesktopComponent {
     }).open();
   }
 
+  private createFolder(i: number) {
+    this.insertInlineEditor(i, "folder", "📁", "新建文件夹", async (name) => {
+      const cur = this.currentPaths[i] ?? "";
+      const path = cur ? `${cur}/${name}` : name;
+      await this.view.app.vault.createFolder(path);
+    });
+  }
+
+  private createFile(i: number) {
+    this.insertInlineEditor(i, "file", "📝", "新建文件.md", async (name) => {
+      const cur = this.currentPaths[i] ?? "";
+      const filename = name.endsWith(".md") ? name : `${name}.md`;
+      const path = cur ? `${cur}/${filename}` : filename;
+      await this.view.app.vault.create(path, "");
+    });
+  }
+
+  private insertInlineEditor(i: number, _type: "file" | "folder", icon: string, placeholder: string, onCreate: (name: string) => Promise<void>) {
+    const grid = this.view.containerEl.querySelector(`#desktop-grid-${i}`) as HTMLElement;
+    if (!grid) return;
+
+    const wrapper = document.createElement("div");
+    wrapper.style.cssText = "display:flex; flex-direction: column; align-items: center; gap: 4px; padding: 6px 4px; border-radius: 8px; background: var(--background-modifier-hover);";
+
+    const iconEl = document.createElement("div");
+    iconEl.style.cssText = "font-size: 32px; line-height: 1; pointer-events: none;";
+    iconEl.textContent = icon;
+
+    const input = document.createElement("input");
+    input.type = "text";
+    input.placeholder = placeholder;
+    input.style.cssText = `
+      font-size: 11px;
+      text-align: center;
+      width: 80px;
+      padding: 2px 4px;
+      border: 1px solid var(--interactive-accent);
+      border-radius: 4px;
+      background: var(--background-primary);
+      color: var(--text-normal);
+      outline: none;
+      font-family: inherit;
+      box-sizing: border-box;
+    `;
+
+    const done = async () => {
+      const name = input.value.trim();
+      wrapper.remove();
+      if (!name) return;
+      try {
+        await onCreate(name);
+        this.renderContents(i);
+      } catch (e) {
+        console.error("创建失败：", e);
+      }
+    };
+
+    const cancel = () => {
+      wrapper.remove();
+    };
+
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); done(); }
+      if (e.key === "Escape") { e.preventDefault(); cancel(); }
+    });
+    input.addEventListener("blur", () => {
+      // delay to allow click on other elements to register first
+      setTimeout(() => {
+        if (wrapper.isConnected) cancel();
+      }, 150);
+    });
+
+    wrapper.appendChild(iconEl);
+    wrapper.appendChild(input);
+    grid.prepend(wrapper);
+
+    requestAnimationFrame(() => {
+      input.focus();
+      input.select();
+    });
+  }
+
+  private showContextMenu(x: number, y: number, i: number, name: string, type: "file" | "folder") {
+    this.removeContextMenu();
+
+    const menu = document.createElement("div");
+    menu.id = "desktop-context-menu";
+    menu.style.cssText = `
+      position: fixed;
+      left: ${x}px;
+      top: ${y}px;
+      z-index: 1000;
+      background: var(--background-primary);
+      border: 1px solid var(--background-modifier-border);
+      border-radius: 6px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.16);
+      padding: 4px;
+      min-width: 140px;
+      font-family: inherit;
+      font-size: 13px;
+    `;
+
+    const deleteBtn = document.createElement("div");
+    deleteBtn.textContent = `删除${type === "folder" ? "文件夹" : "文件"}`;
+    deleteBtn.style.cssText = `
+      padding: 6px 12px;
+      border-radius: 4px;
+      cursor: pointer;
+      color: var(--text-error);
+      user-select: none;
+    `;
+    deleteBtn.addEventListener("mouseenter", () => {
+      deleteBtn.style.background = "var(--background-modifier-hover)";
+    });
+    deleteBtn.addEventListener("mouseleave", () => {
+      deleteBtn.style.background = "transparent";
+    });
+    deleteBtn.addEventListener("click", () => {
+      this.removeContextMenu();
+      this.deleteItem(i, name);
+    });
+
+    menu.appendChild(deleteBtn);
+    document.body.appendChild(menu);
+
+    const close = (e: MouseEvent) => {
+      if (!menu.contains(e.target as Node)) {
+        this.removeContextMenu();
+        document.removeEventListener("click", close, true);
+      }
+    };
+    requestAnimationFrame(() => {
+      document.addEventListener("click", close, true);
+    });
+  }
+
+  private removeContextMenu() {
+    const existing = document.querySelector("#desktop-context-menu");
+    if (existing) existing.remove();
+  }
+
+  private async deleteItem(i: number, name: string) {
+    const cur = this.currentPaths[i] ?? "";
+    const relativePath = cur ? `${cur}/${name}` : name;
+    try {
+      const file = this.view.app.vault.getAbstractFileByPath(relativePath);
+      if (file) {
+        await this.view.app.vault.trash(file, true);
+        this.renderContents(i);
+      }
+    } catch (e) {
+      console.error("删除失败：", e);
+    }
+  }
+
   addInstance() {
     this.view.plugin.settings.desktopFolders.push("");
     this.view.plugin.settings.desktopNames.push("");
@@ -218,12 +373,30 @@ export class DesktopComponent {
       }
     });
 
+    grid?.addEventListener("contextmenu", (e: Event) => {
+      const item = (e.target as HTMLElement).closest(".desktop-item") as HTMLElement | null;
+      if (!item) return;
+      e.preventDefault();
+      const me = e as PointerEvent;
+      const name = item.dataset.path!;
+      const type = item.dataset.type as "file" | "folder";
+      this.showContextMenu(me.clientX, me.clientY, i, name, type);
+    });
+
     this.view.containerEl.querySelector(`#desktop-back-btn-${i}`)?.addEventListener("click", () => {
       this.navigateBack(i);
     });
 
     this.view.containerEl.querySelector(`#desktop-folder-btn-${i}`)?.addEventListener("click", () => {
       this.openFolderPicker(i);
+    });
+
+    this.view.containerEl.querySelector(`#desktop-newfolder-btn-${i}`)?.addEventListener("click", () => {
+      this.createFolder(i);
+    });
+
+    this.view.containerEl.querySelector(`#desktop-newfile-btn-${i}`)?.addEventListener("click", () => {
+      this.createFile(i);
     });
 
     this.view.containerEl.querySelector(`#desktop-add-btn-${i}`)?.addEventListener("click", () => {
