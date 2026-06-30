@@ -1,371 +1,12 @@
-import { App, Plugin, PluginSettingTab, Setting, ItemView, WorkspaceLeaf, Modal, FileSystemAdapter } from "obsidian";
+import { ItemView, WorkspaceLeaf, FileSystemAdapter } from "obsidian";
+import type HomepagePlugin from "./plugin";
+import type { TodoItem, CardLayout } from "./types";
+import { VIEW_TYPE_HOMEPAGE, TODO_COLORS } from "./constants";
+import { formatDateKey, getTimePeriod, escapeHtml, formatTime, formatDate } from "./utils";
+import { TodoAddModal, DesktopFolderModal } from "./modals";
 
-const VIEW_TYPE_HOMEPAGE = "homepage-view";
 
-interface TodoItem {
-  id: string;
-  text: string;
-  color: string;
-  done: boolean;
-  date: string;
-  startTime?: string;
-  endTime?: string;
-}
-
-function formatDateKey(year: number, month: number, day: number): string {
-  return `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-}
-
-interface ComponentInfo {
-  id: string;
-  name: string;
-  added: boolean;
-}
-
-interface CardLayout {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
-interface HomepageSettings {
-  userName: string;
-  todos: TodoItem[];
-  components: ComponentInfo[];
-  cardLayouts: Record<string, CardLayout>;
-  desktopFolders: string[];
-  desktopNames: string[];
-}
-
-const DEFAULT_COMPONENTS: ComponentInfo[] = [
-  { id: "schedule", name: "日程中心", added: true },
-  { id: "timer", name: "计时器", added: false },
-  { id: "desktop", name: "超级桌面", added: false },
-  { id: "todolist", name: "待办列表", added: false },
-];
-
-const DEFAULT_SETTINGS: HomepageSettings = {
-  userName: "",
-  todos: [],
-  components: DEFAULT_COMPONENTS,
-  cardLayouts: {},
-  desktopFolders: [""],
-  desktopNames: [""],
-};
-
-const TODO_COLORS = [
-  { value: "#e53935", label: "高" },
-  { value: "#fb8c00", label: "中高" },
-  { value: "#fdd835", label: "中" },
-  { value: "#43a047", label: "低" },
-];
-
-function getTimePeriod(hours: number): string {
-  if (hours >= 6 && hours < 9) return "早上";
-  if (hours >= 9 && hours < 12) return "上午";
-  if (hours >= 12 && hours < 14) return "中午";
-  if (hours >= 14 && hours < 19) return "下午";
-  return "晚上";
-}
-
-export default class HomepagePlugin extends Plugin {
-  settings: HomepageSettings = DEFAULT_SETTINGS;
-
-  async onload() {
-    await this.loadSettings();
-
-    this.registerView(VIEW_TYPE_HOMEPAGE, (leaf) => new HomepageView(leaf, this));
-
-    this.addCommand({
-      id: "open-homepage",
-      name: "打开首页",
-      callback: () => this.openHomepage(),
-    });
-
-    this.app.workspace.onLayoutReady(() => {
-      const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_HOMEPAGE);
-      if (existing.length === 0) {
-        this.openHomepage();
-      }
-    });
-
-    this.addSettingTab(new HomepageSettingTab(this.app, this));
-  }
-
-  onunload() {
-    this.app.workspace.detachLeavesOfType(VIEW_TYPE_HOMEPAGE);
-  }
-
-  async openHomepage() {
-    const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_HOMEPAGE);
-    if (leaves.length > 0) {
-      this.app.workspace.revealLeaf(leaves[0]);
-      return;
-    }
-    const leaf = this.app.workspace.getLeaf("tab");
-    await leaf.setViewState({ type: VIEW_TYPE_HOMEPAGE, active: true });
-    this.app.workspace.revealLeaf(leaf);
-  }
-
-  async loadSettings() {
-    const data = await this.loadData();
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, data);
-    // merge missing default components into existing settings
-    for (const dc of DEFAULT_COMPONENTS) {
-      if (!this.settings.components.some(c => c.id === dc.id)) {
-        this.settings.components.push({ ...dc });
-      }
-    }
-  }
-
-  async saveSettings() {
-    await this.saveData(this.settings);
-  }
-}
-
-class TodoAddModal extends Modal {
-  private onAdd: (text: string, color: string, date: string, startTime: string, endTime: string) => void;
-  private pickedColor = TODO_COLORS[1].value;
-  private dateKey: string;
-  private dateStr: string;
-  private startTime = "";
-  private endTime = "";
-
-  constructor(app: App, dateKey: string, onAdd: (text: string, color: string, date: string, startTime: string, endTime: string) => void) {
-    super(app);
-    this.dateKey = dateKey;
-    this.onAdd = onAdd;
-    const [y, m, d] = dateKey.split("-").map(Number);
-    this.dateStr = `${y}年${m}月${d}日`;
-  }
-
-  onOpen() {
-    const { contentEl } = this;
-    contentEl.empty();
-
-    contentEl.createEl("h3", { text: "添加待办事项" });
-
-    contentEl.createEl("div", { text: `日期：${this.dateStr}` }, el => {
-      el.style.cssText = "font-size: 13px; color: var(--text-muted); margin-bottom: 12px;";
-    });
-
-    const input = contentEl.createEl("input", {
-      type: "text",
-      placeholder: "输入待办事项...",
-    });
-    input.style.cssText = `
-      width: 100%;
-      padding: 8px 12px;
-      font-size: 14px;
-      border: 1px solid var(--background-modifier-border);
-      border-radius: 6px;
-      background: var(--background-modifier-hover);
-      color: var(--text-normal);
-      outline: none;
-      font-family: inherit;
-      margin-bottom: 16px;
-      box-sizing: border-box;
-    `;
-    input.addEventListener("keydown", (e) => {
-      if ((e as KeyboardEvent).key === "Enter") this.confirm(input);
-      if ((e as KeyboardEvent).key === "Escape") this.close();
-    });
-    input.focus();
-
-    contentEl.createEl("div", { text: "重要程度" }, el => {
-      el.style.cssText = "font-size: 13px; color: var(--text-muted); margin-bottom: 8px;";
-    });
-
-    const colorRow = contentEl.createEl("div");
-    colorRow.style.cssText = "display: flex; gap: 12px; margin-bottom: 20px;";
-
-    TODO_COLORS.forEach((c) => {
-      const dot = colorRow.createEl("span");
-      dot.style.cssText = `
-        width: 28px;
-        height: 28px;
-        border-radius: 50%;
-        background: ${c.value};
-        cursor: pointer;
-        outline: ${this.pickedColor === c.value ? "3px solid var(--text-normal)" : "none"};
-        outline-offset: 3px;
-        transition: outline 0.1s;
-      `;
-      dot.title = c.label;
-      dot.addEventListener("click", () => {
-        this.pickedColor = c.value;
-        colorRow.querySelectorAll("span").forEach(s =>
-          (s as HTMLElement).style.outline = "none"
-        );
-        dot.style.outline = "3px solid var(--text-normal)";
-      });
-    });
-
-    // Time inputs
-    contentEl.createEl("div", { text: "时间段（可选）" }, el => {
-      el.style.cssText = "font-size: 13px; color: var(--text-muted); margin-bottom: 8px;";
-    });
-
-    const timeRow = contentEl.createEl("div");
-    timeRow.style.cssText = "display: flex; gap: 12px; margin-bottom: 20px; align-items: center;";
-
-    const startInput = timeRow.createEl("input", { type: "time" });
-    startInput.style.cssText = `
-      padding: 4px 8px;
-      font-size: 13px;
-      border: 1px solid var(--background-modifier-border);
-      border-radius: 4px;
-      background: var(--background-modifier-hover);
-      color: var(--text-normal);
-      outline: none;
-      font-family: inherit;
-    `;
-    startInput.addEventListener("input", () => { this.startTime = startInput.value; });
-
-    timeRow.createEl("span", { text: "—" }, el => {
-      el.style.cssText = "font-size: 13px; color: var(--text-muted);";
-    });
-
-    const endInput = timeRow.createEl("input", { type: "time" });
-    endInput.style.cssText = `
-      padding: 4px 8px;
-      font-size: 13px;
-      border: 1px solid var(--background-modifier-border);
-      border-radius: 4px;
-      background: var(--background-modifier-hover);
-      color: var(--text-normal);
-      outline: none;
-      font-family: inherit;
-    `;
-    endInput.addEventListener("input", () => { this.endTime = endInput.value; });
-
-    const btnRow = contentEl.createEl("div");
-    btnRow.style.cssText = "display: flex; justify-content: flex-end; gap: 8px;";
-
-    const cancelBtn = btnRow.createEl("button", { text: "取消" });
-    cancelBtn.style.cssText = `
-      padding: 6px 16px;
-      font-size: 14px;
-      border: 1px solid var(--background-modifier-border);
-      border-radius: 4px;
-      background: transparent;
-      color: var(--text-muted);
-      cursor: pointer;
-    `;
-    cancelBtn.addEventListener("click", () => this.close());
-
-    const confirmBtn = btnRow.createEl("button", { text: "添加" });
-    confirmBtn.style.cssText = `
-      padding: 6px 16px;
-      font-size: 14px;
-      border: none;
-      border-radius: 4px;
-      background: var(--interactive-accent);
-      color: var(--text-on-accent);
-      cursor: pointer;
-    `;
-    confirmBtn.addEventListener("click", () => this.confirm(input));
-  }
-
-  private confirm(input: HTMLInputElement) {
-    const text = input.value.trim();
-    if (!text) return;
-    this.onAdd(text, this.pickedColor, this.dateKey, this.startTime, this.endTime);
-    this.close();
-  }
-
-  onClose() {
-    this.contentEl.empty();
-  }
-}
-
-class DesktopFolderModal extends Modal {
-  private onSubmit: (path: string) => void;
-  private currentPath: string;
-
-  constructor(app: App, currentPath: string, onSubmit: (path: string) => void) {
-    super(app);
-    this.currentPath = currentPath;
-    this.onSubmit = onSubmit;
-  }
-
-  onOpen() {
-    const { contentEl } = this;
-    contentEl.empty();
-
-    contentEl.createEl("h3", { text: "设置桌面文件夹" });
-
-    contentEl.createEl("div", {
-      text: "输入 vault 内的文件夹路径（相对于 vault 根目录），留空表示显示整个 vault 根目录。",
-    }, (el) => {
-      el.style.cssText = "font-size: 13px; color: var(--text-muted); margin-bottom: 12px;";
-    });
-
-    const input = contentEl.createEl("input", {
-      type: "text",
-      placeholder: "例如：文档/项目（留空 = vault 根目录）",
-      value: this.currentPath,
-    });
-    input.style.cssText = `
-      width: 100%;
-      padding: 8px 12px;
-      font-size: 14px;
-      border: 1px solid var(--background-modifier-border);
-      border-radius: 6px;
-      background: var(--background-modifier-hover);
-      color: var(--text-normal);
-      outline: none;
-      font-family: inherit;
-      margin-bottom: 16px;
-      box-sizing: border-box;
-    `;
-    input.addEventListener("keydown", (e) => {
-      if ((e as KeyboardEvent).key === "Enter") this.confirm(input.value.trim());
-      if ((e as KeyboardEvent).key === "Escape") this.close();
-    });
-    input.focus();
-
-    const btnRow = contentEl.createEl("div");
-    btnRow.style.cssText = "display: flex; justify-content: flex-end; gap: 8px;";
-
-    const cancelBtn = btnRow.createEl("button", { text: "取消" });
-    cancelBtn.style.cssText = `
-      padding: 6px 16px;
-      font-size: 14px;
-      border: 1px solid var(--background-modifier-border);
-      border-radius: 4px;
-      background: transparent;
-      color: var(--text-muted);
-      cursor: pointer;
-    `;
-    cancelBtn.addEventListener("click", () => this.close());
-
-    const confirmBtn = btnRow.createEl("button", { text: "确定" });
-    confirmBtn.style.cssText = `
-      padding: 6px 16px;
-      font-size: 14px;
-      border: none;
-      border-radius: 4px;
-      background: var(--interactive-accent);
-      color: var(--text-on-accent);
-      cursor: pointer;
-    `;
-    confirmBtn.addEventListener("click", () => this.confirm(input.value.trim()));
-  }
-
-  private confirm(path: string) {
-    const normalized = path.replace(/^\/+|\/+$/g, "");
-    this.onSubmit(normalized);
-    this.close();
-  }
-
-  onClose() {
-    this.contentEl.empty();
-  }
-}
-
-class HomepageView extends ItemView {
+export class HomepageView extends ItemView {
   plugin: HomepagePlugin;
   private intervalId: number | null = null;
   private calendarYear: number;
@@ -380,6 +21,7 @@ class HomepageView extends ItemView {
   private timerDisplayMode: "clock" | "digital" = "clock";
   private timerIntervalId: number | null = null;
   private cardResizeObserver: ResizeObserver | null = null;
+  private resizeSaveTimers = new Map<string, number>();
   private desktopCurrentPaths: string[] = [];
   private todoListMode: "today" | "week" | "month" = "today";
 
@@ -430,7 +72,7 @@ class HomepageView extends ItemView {
 
   private saveCardLayout(id: string, x: number, y: number, width: number, height: number) {
     this.plugin.settings.cardLayouts[id] = { x, y, width, height };
-    this.plugin.saveSettings();
+    this.plugin.saveSettings().catch(console.error);
   }
 
   private isComponentAdded(id: string): boolean {
@@ -438,7 +80,7 @@ class HomepageView extends ItemView {
   }
 
   private render() {
-    const container = this.containerEl.children[1] as HTMLElement;
+    const container = this.contentEl as HTMLElement;
     container.empty();
 
     const now = new Date();
@@ -480,7 +122,7 @@ class HomepageView extends ItemView {
             id="homepage-name-input"
             type="text"
             placeholder="你的名字"
-            value="${userName}"
+            value="${escapeHtml(userName)}"
             style="
               font-size: 15px;
               color: var(--text-normal);
@@ -500,13 +142,13 @@ class HomepageView extends ItemView {
           font-weight: 300;
           color: var(--text-normal);
           font-variant-numeric: tabular-nums;
-        ">${this.formatTime(now)}</div>
+        ">${formatTime(now)}</div>
         <div id="homepage-date" style="
           font-size: 15px;
           color: var(--text-muted);
           text-align: right;
           min-width: 140px;
-        ">${this.formatDate(now)}</div>
+        ">${formatDate(now)}</div>
       </div>
       <div id="homepage-content" style="
         flex: 1;
@@ -514,7 +156,7 @@ class HomepageView extends ItemView {
         overflow-y: auto;
         overflow-x: hidden;
       ">
-        <div id="homepage-card-wrapper" data-component-id="schedule" style="
+        <div id="homepage-card-wrapper" data-component-id="schedule" data-component-wrapper="true" style="
           position: absolute;
           resize: both;
           overflow: hidden;
@@ -560,7 +202,7 @@ class HomepageView extends ItemView {
             "></div>
           </div>
         </div>
-        <div id="homepage-timer-wrapper" data-component-id="timer" style="
+        <div id="homepage-timer-wrapper" data-component-id="timer" data-component-wrapper="true" style="
           position: absolute;
           resize: both;
           overflow: hidden;
@@ -628,7 +270,7 @@ class HomepageView extends ItemView {
         </div>
         <div id="homepage-desktop-container" style="display: ${this.isComponentAdded("desktop") ? "contents" : "none"};">
           ${this.plugin.settings.desktopFolders.map((_folder, i) => `
-          <div id="homepage-desktop-wrapper-${i}" data-component-id="desktop-${i}" style="
+          <div id="homepage-desktop-wrapper-${i}" data-component-id="desktop-${i}" data-component-wrapper="true" style="
             position: absolute;
             resize: both;
             overflow: hidden;
@@ -663,7 +305,7 @@ class HomepageView extends ItemView {
                   id="desktop-name-input-${i}"
                   type="text"
                   placeholder="超级桌面 ${i + 1}"
-                  value="${this.escapeHtml(this.plugin.settings.desktopNames[i] ?? "")}"
+                  value="${escapeHtml(this.plugin.settings.desktopNames[i] ?? "")}"
                   style="
                     font-size: 13px;
                     font-weight: 600;
@@ -750,7 +392,7 @@ class HomepageView extends ItemView {
           </div>
           `).join("")}
         </div>
-        <div id="homepage-todolist-wrapper" data-component-id="todolist" style="
+        <div id="homepage-todolist-wrapper" data-component-id="todolist" data-component-wrapper="true" style="
           position: absolute;
           resize: both;
           overflow: hidden;
@@ -877,19 +519,8 @@ class HomepageView extends ItemView {
       });
 
       // auto-resize input width to fit content
-      const resizeInput = () => {
-        const span = document.createElement("span");
-        span.style.cssText = `
-          font-size: 15px; letter-spacing: 1px; font-family: inherit;
-          position: absolute; visibility: hidden; white-space: pre;
-        `;
-        document.body.appendChild(span);
-        span.textContent = input.value || input.placeholder;
-        input.style.width = (span.offsetWidth + 4) + "px";
-        document.body.removeChild(span);
-      };
-      input.addEventListener("input", resizeInput);
-      resizeInput();
+      input.addEventListener("input", () => this.autoResizeInput(input, 4));
+      this.autoResizeInput(input, 4);
     }
   }
 
@@ -900,6 +531,33 @@ class HomepageView extends ItemView {
     if (target.closest(".desktop-item")) return true;
     if (target.closest(".todolist-tab, .todolist-check, .todolist-delete, .todolist-add, .todolist-gantt-bar")) return true;
     return false;
+  }
+
+  private autoResizeInput(input: HTMLInputElement, extraPx: number = 6): void {
+    const span = document.createElement("span");
+    const cs = getComputedStyle(input);
+    span.style.cssText = `
+      font: ${cs.font};
+      letter-spacing: ${cs.letterSpacing};
+      position: absolute; visibility: hidden; white-space: pre;
+    `;
+    document.body.appendChild(span);
+    span.textContent = input.value || input.placeholder;
+    input.style.width = (span.offsetWidth + extraPx) + "px";
+    document.body.removeChild(span);
+  }
+
+  private setupHoverDeleteButton(itemSelector: string, deleteSelector: string): void {
+    this.containerEl.querySelectorAll(itemSelector).forEach(el => {
+      el.addEventListener("mouseenter", () => {
+        const del = el.querySelector(deleteSelector) as HTMLElement;
+        if (del) del.style.visibility = "visible";
+      });
+      el.addEventListener("mouseleave", () => {
+        const del = el.querySelector(deleteSelector) as HTMLElement;
+        if (del) del.style.visibility = "hidden";
+      });
+    });
   }
 
   private setupCardPosition(container: HTMLElement, componentId: string, wrapperSelector: string) {
@@ -924,17 +582,34 @@ class HomepageView extends ItemView {
     wrapper.style.left = posX + "px";
     wrapper.style.top = posY + "px";
 
+    // resolve overlaps for new cards (no saved layout) against existing cards
+    if (layout.x < 0) {
+      const maxX = contentArea.offsetWidth - w;
+      const others = this.getOtherCardBounds(wrapperSelector);
+      let cx = posX, cy = posY;
+      for (let iter = 0; iter < 5; iter++) {
+        const c = this.constrainNoOverlap(cx, cy, w, h, others);
+        cx = Math.max(0, Math.min(c.x, maxX));
+        cy = Math.max(0, c.y);
+        if (cx === c.x && cy === c.y) break;
+      }
+      posX = cx;
+      posY = cy;
+      wrapper.style.left = posX + "px";
+      wrapper.style.top = posY + "px";
+    }
+
     let startX = 0, startY = 0, origLeft = 0, origTop = 0;
     let isResizing = false;
 
     wrapper.addEventListener("pointerdown", (e) => {
+      isResizing = false;
       // detect click on the native resize handle (bottom-right ~20px corner)
       const rect = wrapper.getBoundingClientRect();
       if (e.clientX > rect.right - 20 && e.clientY > rect.bottom - 20) {
         isResizing = true;
         return; // let browser handle resize natively, skip drag
       }
-      isResizing = false;
       if (this.isInteractiveTarget(e.target as HTMLElement)) return;
       wrapper.setPointerCapture((e as PointerEvent).pointerId);
       wrapper.style.cursor = "grabbing";
@@ -945,11 +620,19 @@ class HomepageView extends ItemView {
     wrapper.addEventListener("pointermove", (e) => {
       if (!wrapper.hasPointerCapture((e as PointerEvent).pointerId)) return;
       const maxX = contentArea.offsetWidth - wrapper.offsetWidth;
-      let nx = Math.max(0, Math.min(origLeft + e.clientX - startX, maxX));
-      let ny = Math.max(0, origTop + e.clientY - startY);
-      const c = this.constrainNoOverlap(nx, ny, wrapper.offsetWidth, wrapper.offsetHeight, this.getOtherCardBounds(wrapperSelector));
-      posX = Math.max(0, Math.min(c.x, maxX));
-      posY = Math.max(0, c.y);
+      const nx = Math.max(0, Math.min(origLeft + e.clientX - startX, maxX));
+      const ny = Math.max(0, origTop + e.clientY - startY);
+      const others = this.getOtherCardBounds(wrapperSelector);
+      // loop constrain + clamp — clamping may push back into overlap
+      let cx = nx, cy = ny;
+      for (let iter = 0; iter < 5; iter++) {
+        const c = this.constrainNoOverlap(cx, cy, wrapper.offsetWidth, wrapper.offsetHeight, others);
+        cx = Math.max(0, Math.min(c.x, maxX));
+        cy = Math.max(0, c.y);
+        if (cx === c.x && cy === c.y) break;
+      }
+      posX = cx;
+      posY = cy;
       wrapper.style.left = posX + "px";
       wrapper.style.top = posY + "px";
       this.expandContentHeight();
@@ -968,6 +651,7 @@ class HomepageView extends ItemView {
       } else {
         this.saveCardLayout(componentId, posX, posY, wrapper.offsetWidth, wrapper.offsetHeight);
       }
+      isResizing = false;
     });
   }
 
@@ -980,10 +664,15 @@ class HomepageView extends ItemView {
         if (!id) continue;
         const prev = this.plugin.settings.cardLayouts[id];
         if (!prev) continue;
-        this.saveCardLayout(id, prev.x, prev.y, entry.contentRect.width, entry.contentRect.height);
+        const existing = this.resizeSaveTimers.get(id);
+        if (existing) window.clearTimeout(existing);
+        this.resizeSaveTimers.set(id, window.setTimeout(() => {
+          this.resizeSaveTimers.delete(id);
+          this.saveCardLayout(id, prev.x, prev.y, entry.contentRect.width, entry.contentRect.height);
+        }, 200));
       }
     });
-    this.containerEl.querySelectorAll('[id$="-wrapper"]').forEach(w => {
+    this.containerEl.querySelectorAll('[data-component-wrapper]').forEach(w => {
       this.cardResizeObserver!.observe(w as HTMLElement);
     });
   }
@@ -992,7 +681,7 @@ class HomepageView extends ItemView {
     const content = this.containerEl.querySelector("#homepage-content") as HTMLElement;
     if (!content) return;
     let maxBottom = content.clientHeight;
-    content.querySelectorAll('[id$="-wrapper"]').forEach(w => {
+    content.querySelectorAll('[data-component-wrapper]').forEach(w => {
       const el = w as HTMLElement;
       if (el.style.display === "none") return;
       maxBottom = Math.max(maxBottom, el.offsetTop + el.offsetHeight + 60);
@@ -1003,12 +692,13 @@ class HomepageView extends ItemView {
   private getOtherCardBounds(excludeSelector: string): Array<{ x: number; y: number; w: number; h: number }> {
     const content = this.containerEl.querySelector("#homepage-content") as HTMLElement;
     if (!content) return [];
-    const wrappers = content.querySelectorAll('[id$="-wrapper"]');
+    const wrappers = content.querySelectorAll('[data-component-wrapper]');
     const result: Array<{ x: number; y: number; w: number; h: number }> = [];
     wrappers.forEach(w => {
       const el = w as HTMLElement;
       if (el.matches(excludeSelector)) return;
       if (el.style.display === "none") return;
+      if (!el.style.left) return; // skip cards not yet positioned by setupCardPosition
       result.push({
         x: el.offsetLeft,
         y: el.offsetTop,
@@ -1025,20 +715,27 @@ class HomepageView extends ItemView {
   ): { x: number; y: number } {
     const GAP = 12;
     let rx = x, ry = y;
-    for (const o of others) {
-      const ox = rx < o.x + o.w + GAP && rx + w + GAP > o.x;
-      const oy = ry < o.y + o.h + GAP && ry + h + GAP > o.y;
-      if (!ox || !oy) continue;
-      // push to nearest edge with gap
-      const pushRight = (o.x + o.w + GAP) - rx;
-      const pushLeft = (rx + w + GAP) - o.x;
-      const pushDown = (o.y + o.h + GAP) - ry;
-      const pushUp = (ry + h + GAP) - o.y;
-      if (Math.min(pushRight, pushLeft) < Math.min(pushDown, pushUp)) {
-        rx = pushRight < pushLeft ? o.x + o.w + GAP : o.x - w - GAP;
-      } else {
-        ry = pushDown < pushUp ? o.y + o.h + GAP : o.y - h - GAP;
+    // iterate until stable to handle cascading overlaps (resolving with card B
+    // may push back into card A which was already processed)
+    for (let iter = 0; iter < 10; iter++) {
+      let moved = false;
+      for (const o of others) {
+        const ox = rx < o.x + o.w + GAP && rx + w + GAP > o.x;
+        const oy = ry < o.y + o.h + GAP && ry + h + GAP > o.y;
+        if (!ox || !oy) continue;
+        // push to nearest edge with gap
+        const pushRight = (o.x + o.w + GAP) - rx;
+        const pushLeft = (rx + w + GAP) - o.x;
+        const pushDown = (o.y + o.h + GAP) - ry;
+        const pushUp = (ry + h + GAP) - o.y;
+        if (Math.min(pushRight, pushLeft) < Math.min(pushDown, pushUp)) {
+          rx = pushRight < pushLeft ? o.x + o.w + GAP : o.x - w - GAP;
+        } else {
+          ry = pushDown < pushUp ? o.y + o.h + GAP : o.y - h - GAP;
+        }
+        moved = true;
       }
+      if (!moved) break;
     }
     return { x: rx, y: ry };
   }
@@ -1166,7 +863,7 @@ class HomepageView extends ItemView {
     });
   }
 
-  private getDisplayTime(): number {
+  private getCurrentDisplayTime(): number {
     const total = this.timerHours * 3600 + this.timerMinutes * 60 + this.timerSeconds;
     // paused mid-countdown → show frozen remaining time
     if (!this.timerRunning && this.timerRemaining > 0 && this.timerRemaining < total) {
@@ -1184,7 +881,7 @@ class HomepageView extends ItemView {
     const display = this.containerEl.querySelector("#timer-display") as HTMLElement;
     if (!display) return;
 
-    const t = this.getDisplayTime();
+    const t = this.getCurrentDisplayTime();
     const maxTotal = this.timerHours * 3600 + this.timerMinutes * 60 + this.timerSeconds;
     if (this.timerDisplayMode === "clock") {
       display.innerHTML = this.renderClockFace(t, maxTotal);
@@ -1478,7 +1175,7 @@ class HomepageView extends ItemView {
   private renderDesktopItem(name: string, type: "file" | "folder"): string {
     const icon = type === "folder" ? "📁" : this.getFileIcon(name);
     return `
-      <div class="desktop-item" data-path="${this.escapeHtml(name)}" data-type="${type}" style="
+      <div class="desktop-item" data-path="${escapeHtml(name)}" data-type="${type}" style="
         display: flex;
         flex-direction: column;
         align-items: center;
@@ -1502,7 +1199,7 @@ class HomepageView extends ItemView {
           -webkit-line-clamp: 2;
           -webkit-box-orient: vertical;
           pointer-events: none;
-        ">${this.escapeHtml(name)}</span>
+        ">${escapeHtml(name)}</span>
       </div>
     `;
   }
@@ -1533,6 +1230,7 @@ class HomepageView extends ItemView {
     `;
 
     try {
+      if (!this.app.vault.adapter) return;
       const result = await this.app.vault.adapter.list(cur);
       const folders = [...result.folders].sort((a, b) => a.localeCompare(b));
       const files = [...result.files].sort((a, b) => a.localeCompare(b));
@@ -1592,8 +1290,10 @@ class HomepageView extends ItemView {
       const basePath = adapter.getBasePath();
       const absolutePath = `${basePath}/${relativePath}`;
       // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const { shell } = require("electron");
-      shell.openPath(absolutePath);
+      if (typeof require !== "undefined") {
+        const { shell } = require("electron");
+        shell.openPath(absolutePath);
+      }
     } catch {
       // silently fail on non-desktop platforms
     }
@@ -1624,7 +1324,7 @@ class HomepageView extends ItemView {
     const root = this.plugin.settings.desktopFolders[i] ?? "";
     new DesktopFolderModal(this.app, root, (newPath) => {
       this.plugin.settings.desktopFolders[i] = newPath;
-      this.plugin.saveSettings();
+      this.plugin.saveSettings().catch(console.error);
       this.desktopCurrentPaths[i] = newPath;
       this.renderDesktopContents(i);
     }).open();
@@ -1633,7 +1333,7 @@ class HomepageView extends ItemView {
   private addDesktopInstance() {
     this.plugin.settings.desktopFolders.push("");
     this.plugin.settings.desktopNames.push("");
-    this.plugin.saveSettings();
+    this.plugin.saveSettings().catch(console.error);
     this.render();
   }
 
@@ -1641,7 +1341,7 @@ class HomepageView extends ItemView {
     if (this.plugin.settings.desktopFolders.length <= 1) return;
     this.plugin.settings.desktopFolders.splice(i, 1);
     this.plugin.settings.desktopNames.splice(i, 1);
-    this.plugin.saveSettings();
+    this.plugin.saveSettings().catch(console.error);
     this.render();
   }
 
@@ -1681,22 +1381,14 @@ class HomepageView extends ItemView {
     if (nameInput) {
       nameInput.addEventListener("change", () => {
         this.plugin.settings.desktopNames[i] = nameInput.value.trim();
-        this.plugin.saveSettings();
+        this.plugin.saveSettings().catch(console.error);
       });
       nameInput.addEventListener("keydown", (e) => {
         if (e.key === "Enter") nameInput.blur();
       });
       // auto-resize input width to fit content
-      const resize = () => {
-        const span = document.createElement("span");
-        span.style.cssText = "font-size: 13px; font-weight: 600; font-family: inherit; position: absolute; visibility: hidden; white-space: pre;";
-        document.body.appendChild(span);
-        span.textContent = nameInput.value || nameInput.placeholder;
-        nameInput.style.width = (span.offsetWidth + 12) + "px";
-        document.body.removeChild(span);
-      };
-      nameInput.addEventListener("input", resize);
-      resize();
+      nameInput.addEventListener("input", () => this.autoResizeInput(nameInput, 12));
+      this.autoResizeInput(nameInput, 12);
     }
   }
 
@@ -1704,6 +1396,7 @@ class HomepageView extends ItemView {
 
   private sidebarOpen = false;
   private sidebarSearchQuery = "";
+  private sidebarSearchTimer: number | null = null;
 
   private renderSidebar() {
     const sidebar = this.containerEl.querySelector("#homepage-sidebar") as HTMLElement;
@@ -1797,7 +1490,11 @@ class HomepageView extends ItemView {
 
     sidebar.querySelector("#sidebar-search")?.addEventListener("input", (e) => {
       this.sidebarSearchQuery = (e.target as HTMLInputElement).value;
-      this.renderSidebar();
+      if (this.sidebarSearchTimer) window.clearTimeout(this.sidebarSearchTimer);
+      this.sidebarSearchTimer = window.setTimeout(() => {
+        this.sidebarSearchTimer = null;
+        this.renderSidebar();
+      }, 150);
     });
 
     if (isOpen) this.bindDragEvents();
@@ -1896,7 +1593,7 @@ class HomepageView extends ItemView {
         const comp = this.plugin.settings.components.find(c => c.id === id);
         if (comp) {
           comp.added = !comp.added;
-          this.plugin.saveSettings();
+          this.plugin.saveSettings().catch(console.error);
           this.renderSidebar();
           this.render();
         }
@@ -1920,7 +1617,7 @@ class HomepageView extends ItemView {
         const comp = this.plugin.settings.components.find(c => c.id === id);
         if (comp && comp.added !== (targetZone === "added")) {
           comp.added = targetZone === "added";
-          this.plugin.saveSettings();
+          this.plugin.saveSettings().catch(console.error);
           this.renderSidebar();
           this.render(); // re-render main area to show/hide component
         }
@@ -1932,9 +1629,9 @@ class HomepageView extends ItemView {
     const now = new Date();
     const clockEl = this.containerEl.querySelector("#homepage-clock");
     const dateEl = this.containerEl.querySelector("#homepage-date");
-    if (clockEl) clockEl.textContent = this.formatTime(now);
+    if (clockEl) clockEl.textContent = formatTime(now);
     if (dateEl) {
-      const newDate = this.formatDate(now);
+      const newDate = formatDate(now);
       if (dateEl.textContent !== newDate) {
         dateEl.textContent = newDate;
         // date changed, time period might have changed too
@@ -1945,7 +1642,7 @@ class HomepageView extends ItemView {
 
   private saveName(name: string) {
     this.plugin.settings.userName = name;
-    this.plugin.saveSettings();
+    this.plugin.saveSettings().catch(console.error);
   }
 
   private updateGreeting() {
@@ -2009,11 +1706,11 @@ class HomepageView extends ItemView {
         const yesterdayKey = this.getYesterdayKey(this.selectedDate);
         const undone = this.plugin.settings.todos.filter(t => t.date === yesterdayKey && !t.done);
         if (undone.length === 0) return "";
-        const [, ym, yd] = yesterdayKey.split("-");
+        const [, yMonth, yDay] = yesterdayKey.split("-");
         return `
           <div style="margin-top: 12px; border-top: 1px solid var(--background-modifier-border); padding-top: 8px;">
             <div style="font-size: 10px; font-weight: 600; color: var(--text-muted); margin-bottom: 4px; display: flex; align-items: center; justify-content: space-between;">
-              <span>昨${Number(ym)}.${Number(yd)}</span>
+              <span>昨${Number(yMonth)}.${Number(yDay)}</span>
               <span class="yesterday-sync-all" style="cursor: pointer; color: var(--interactive-accent); font-weight: 400;">全→</span>
             </div>
             ${undone.map(t => `
@@ -2026,7 +1723,7 @@ class HomepageView extends ItemView {
                 "></span>
                 <span style="
                   flex: 1; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-                ">${this.escapeHtml(t.text)}</span>
+                ">${escapeHtml(t.text)}</span>
                 <span class="yesterday-sync-one" style="
                   cursor: pointer; color: var(--text-faint); font-size: 11px; flex-shrink: 0;
                 ">→</span>
@@ -2044,7 +1741,7 @@ class HomepageView extends ItemView {
             ${doneToday.map(t => `
               <div style="font-size: 10px; color: var(--text-faint); text-decoration: line-through; padding: 1px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
                 <span style="display:inline-block; width:5px; height:5px; border-radius:50%; background:${t.color}; vertical-align:middle; margin-right:3px;"></span>
-                ${this.escapeHtml(t.text)}
+                ${escapeHtml(t.text)}
               </div>
             `).join("")}
           </div>
@@ -2057,7 +1754,9 @@ class HomepageView extends ItemView {
     statsContainer.querySelectorAll(".yesterday-sync-one").forEach(el => {
       el.addEventListener("click", (e) => {
         e.stopPropagation();
-        const id = (el as HTMLElement).parentElement!.dataset.id!;
+        const parent = (el as HTMLElement).parentElement;
+        const id = parent?.dataset?.id;
+        if (!id) return;
         this.syncTodoToToday(id);
       });
     });
@@ -2067,7 +1766,7 @@ class HomepageView extends ItemView {
     const todo = this.plugin.settings.todos.find(t => t.id === id);
     if (!todo) return;
     todo.date = this.selectedDate;
-    this.plugin.saveSettings();
+    this.plugin.saveSettings().catch(console.error);
     this.renderStats();
     this.renderCalendar();
     this.renderTodo();
@@ -2084,7 +1783,7 @@ class HomepageView extends ItemView {
       }
     }
     if (!changed) return;
-    this.plugin.saveSettings();
+    this.plugin.saveSettings().catch(console.error);
     this.renderStats();
     this.renderCalendar();
     this.renderTodo();
@@ -2359,7 +2058,7 @@ class HomepageView extends ItemView {
               overflow: hidden;
               text-overflow: ellipsis;
               white-space: nowrap;
-            ">${this.escapeHtml(todo.text)}</span>
+            ">${escapeHtml(todo.text)}</span>
             ${todo.startTime ? `<span style="font-size:10px; color:var(--text-faint); flex-shrink:0;">${todo.startTime}${todo.endTime ? `-${todo.endTime}` : ""}</span>` : ""}
             <span class="todo-delete" style="
               cursor: pointer;
@@ -2406,7 +2105,9 @@ class HomepageView extends ItemView {
     // Toggle todo
     this.containerEl.querySelectorAll(".todo-check").forEach(el => {
       el.addEventListener("click", (e) => {
-        const id = (e.currentTarget as HTMLElement).parentElement!.dataset.id!;
+        const parent = (e.currentTarget as HTMLElement).parentElement;
+        const id = parent?.dataset?.id;
+        if (!id) return;
         this.toggleTodo(id);
       });
     });
@@ -2415,22 +2116,15 @@ class HomepageView extends ItemView {
     this.containerEl.querySelectorAll(".todo-delete").forEach(el => {
       el.addEventListener("click", (e) => {
         e.stopPropagation();
-        const id = (e.currentTarget as HTMLElement).parentElement!.dataset.id!;
+        const parent = (e.currentTarget as HTMLElement).parentElement;
+        const id = parent?.dataset?.id;
+        if (!id) return;
         this.deleteTodo(id);
       });
     });
 
     // Hover show delete
-    this.containerEl.querySelectorAll(".todo-item").forEach(el => {
-      el.addEventListener("mouseenter", () => {
-        const del = el.querySelector(".todo-delete") as HTMLElement;
-        if (del) del.style.visibility = "visible";
-      });
-      el.addEventListener("mouseleave", () => {
-        const del = el.querySelector(".todo-delete") as HTMLElement;
-        if (del) del.style.visibility = "hidden";
-      });
-    });
+    this.setupHoverDeleteButton(".todo-item", ".todo-delete");
 
   }
 
@@ -2640,7 +2334,7 @@ class HomepageView extends ItemView {
             opacity: ${t.done ? 0.4 : 0.85};
           "></div>
           <div style="flex:1; min-width:0; display:flex; flex-direction:column; justify-content:center; gap:1px;">
-            <span style="font-size:11px; color:var(--text-normal); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; line-height:1.3; text-decoration:${t.done ? 'line-through' : 'none'}; opacity:${t.done ? 0.5 : 1};">${this.escapeHtml(t.text)}</span>
+            <span style="font-size:11px; color:var(--text-normal); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; line-height:1.3; text-decoration:${t.done ? 'line-through' : 'none'}; opacity:${t.done ? 0.5 : 1};">${escapeHtml(t.text)}</span>
             <span style="font-size:10px; color:var(--text-muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; line-height:1.3;">${t.startTime}-${t.endTime} · ${this.formatDuration(t.startTime!, t.endTime!)}</span>
           </div>
           <span class="todolist-delete" style="cursor:pointer; color:var(--text-faint); font-size:13px; flex-shrink:0; font-weight:bold; visibility:hidden; line-height:1;">×</span>
@@ -2664,7 +2358,7 @@ class HomepageView extends ItemView {
     return `
       <div class="todolist-item" data-id="${todo.id}" style="display:flex; align-items:center; gap:6px; padding:3px 4px; border-radius:4px; font-size:12px;">
         <span class="todolist-check" style="cursor:pointer; font-size:14px; color:${todo.done ? 'var(--text-faint)' : todo.color}; flex-shrink:0;">${todo.done ? '☑' : '☐'}</span>
-        <span style="flex:1; color:var(--text-normal); text-decoration:${todo.done ? 'line-through' : 'none'}; opacity:${todo.done ? 0.5 : 1}; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${this.escapeHtml(todo.text)}</span>
+        <span style="flex:1; color:var(--text-normal); text-decoration:${todo.done ? 'line-through' : 'none'}; opacity:${todo.done ? 0.5 : 1}; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(todo.text)}</span>
         ${timeStr ? `<span style="font-size:10px; color:var(--text-faint); flex-shrink:0;">${timeStr}</span>` : ""}
         <span class="todolist-delete" style="cursor:pointer; color:var(--text-faint); font-size:13px; flex-shrink:0; visibility:hidden;">×</span>
       </div>`;
@@ -2682,7 +2376,9 @@ class HomepageView extends ItemView {
     // Check toggle
     this.containerEl.querySelectorAll(".todolist-check").forEach(el => {
       el.addEventListener("click", (e) => {
-        const id = (e.currentTarget as HTMLElement).parentElement!.dataset.id!;
+        const parent = (e.currentTarget as HTMLElement).parentElement;
+        const id = parent?.dataset?.id;
+        if (!id) return;
         this.toggleTodo(id);
       });
     });
@@ -2691,22 +2387,15 @@ class HomepageView extends ItemView {
     this.containerEl.querySelectorAll(".todolist-delete").forEach(el => {
       el.addEventListener("click", (e) => {
         e.stopPropagation();
-        const id = (e.currentTarget as HTMLElement).parentElement!.dataset.id!;
+        const parent = (e.currentTarget as HTMLElement).parentElement;
+        const id = parent?.dataset?.id;
+        if (!id) return;
         this.deleteTodo(id);
       });
     });
 
     // Hover show delete
-    this.containerEl.querySelectorAll(".todolist-item").forEach(el => {
-      el.addEventListener("mouseenter", () => {
-        const del = el.querySelector(".todolist-delete") as HTMLElement;
-        if (del) del.style.visibility = "visible";
-      });
-      el.addEventListener("mouseleave", () => {
-        const del = el.querySelector(".todolist-delete") as HTMLElement;
-        if (del) del.style.visibility = "hidden";
-      });
-    });
+    this.setupHoverDeleteButton(".todolist-item", ".todolist-delete");
 
     // Gantt bar toggle
     this.containerEl.querySelectorAll(".todolist-gantt-bar").forEach(el => {
@@ -2715,15 +2404,8 @@ class HomepageView extends ItemView {
         const id = (e.currentTarget as HTMLElement).dataset.id!;
         this.toggleTodo(id);
       });
-      el.addEventListener("mouseenter", () => {
-        const del = el.querySelector(".todolist-delete") as HTMLElement;
-        if (del) del.style.visibility = "visible";
-      });
-      el.addEventListener("mouseleave", () => {
-        const del = el.querySelector(".todolist-delete") as HTMLElement;
-        if (del) del.style.visibility = "hidden";
-      });
     });
+    this.setupHoverDeleteButton(".todolist-gantt-bar", ".todolist-delete");
 
     // Tab buttons
     this.containerEl.querySelectorAll(".todolist-tab").forEach(el => {
@@ -2785,7 +2467,7 @@ class HomepageView extends ItemView {
       endTime: endTime || undefined,
     };
     this.plugin.settings.todos.push(todo);
-    this.plugin.saveSettings();
+    this.plugin.saveSettings().catch(console.error);
     this.renderStats();
     this.renderCalendar();
     this.renderTodo();
@@ -2796,7 +2478,7 @@ class HomepageView extends ItemView {
     const todo = this.plugin.settings.todos.find(t => t.id === id);
     if (todo) {
       todo.done = !todo.done;
-      this.plugin.saveSettings();
+      this.plugin.saveSettings().catch(console.error);
       this.renderStats();
       this.renderCalendar();
       this.renderTodo();
@@ -2806,65 +2488,11 @@ class HomepageView extends ItemView {
 
   private deleteTodo(id: string) {
     this.plugin.settings.todos = this.plugin.settings.todos.filter(t => t.id !== id);
-    this.plugin.saveSettings();
+    this.plugin.saveSettings().catch(console.error);
     this.renderStats();
     this.renderCalendar();
     this.renderTodo();
     if (this.isComponentAdded("todolist")) this.refreshTodoListView();
   }
 
-  private escapeHtml(text: string): string {
-    const div = document.createElement("div");
-    div.textContent = text;
-    return div.innerHTML;
-  }
-
-  private formatTime(date: Date): string {
-    const h = date.getHours().toString().padStart(2, "0");
-    const m = date.getMinutes().toString().padStart(2, "0");
-    const s = date.getSeconds().toString().padStart(2, "0");
-    return `${h}:${m}:${s}`;
-  }
-
-  private formatDate(date: Date): string {
-    const weekdays = ["星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"];
-    const y = date.getFullYear();
-    const m = date.getMonth() + 1;
-    const d = date.getDate();
-    const w = weekdays[date.getDay()];
-    return `${y}年${m}月${d}日 ${w}`;
-  }
-}
-
-class HomepageSettingTab extends PluginSettingTab {
-  plugin: HomepagePlugin;
-
-  constructor(app: App, plugin: HomepagePlugin) {
-    super(app, plugin);
-    this.plugin = plugin;
-  }
-
-  display(): void {
-    const { containerEl } = this;
-    containerEl.empty();
-
-    containerEl.createEl("h2", { text: "Homepage 设置" });
-
-    new Setting(containerEl)
-      .setName("你的名字")
-      .setDesc("首页问候中显示的名字")
-      .addText((text) =>
-        text
-          .setPlaceholder("输入你的名字")
-          .setValue(this.plugin.settings.userName)
-          .onChange(async (value) => {
-            this.plugin.settings.userName = value.trim();
-            await this.plugin.saveSettings();
-          })
-      );
-
-    new Setting(containerEl)
-      .setName("超级桌面")
-      .setDesc("各桌面实例的文件夹在组件内通过设置按钮独立配置");
-  }
 }

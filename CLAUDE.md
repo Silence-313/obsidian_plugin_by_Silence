@@ -28,21 +28,30 @@ npm run lint       # TypeScript 类型检查
 ## 文件结构
 
 ```
-main.ts              # 插件入口，全部类型、常量、类（~2300行）
-manifest.json        # 插件元数据（id, name, minAppVersion）
-esbuild.config.mjs   # esbuild 打包配置
+src/                 # 源码目录
+  main.ts            # 入口文件，单行 re-export plugin.ts
+  types.ts           # 所有 interface/type（TodoItem, ComponentInfo, CardLayout, HomepageSettings）
+  constants.ts       # 常量（VIEW_TYPE_HOMEPAGE, DEFAULT_COMPONENTS, DEFAULT_SETTINGS, TODO_COLORS）
+  utils.ts           # 纯工具函数（formatDateKey, getTimePeriod, escapeHtml, formatTime, formatDate）
+  plugin.ts          # HomepagePlugin 类 — 插件入口，注册 view/command/settingTab
+  modals.ts          # TodoAddModal + DesktopFolderModal 弹窗类
+  settings.ts        # HomepageSettingTab 设置面板
+  view.ts            # HomepageView 类 — 首页视图，包含所有组件渲染和交互逻辑
+  components/        # 组件模块目录（预留，待后续拆分 view.ts）
+manifest.json        # 插件元数据
+esbuild.config.mjs   # esbuild 打包配置（入口 src/main.ts，输出到 vault）
 styles.css           # 日历 hover 样式
 ```
 
 ### 核心类
 
-| 类 | 职责 |
-|----|------|
-| `HomepagePlugin` | 插件入口，注册 view/command/settingTab，管理 settings |
-| `HomepageView` | ItemView，渲染整个首页 UI，包含所有组件和交互逻辑 |
-| `HomepageSettingTab` | 设置面板 |
-| `TodoAddModal` | 添加待办的弹窗（继承 Modal） |
-| `DesktopFolderModal` | 超级桌面文件夹路径配置弹窗（继承 Modal） |
+| 类 | 文件 | 职责 |
+|----|------|------|
+| `HomepagePlugin` | `plugin.ts` | 插件入口，注册 view/command/settingTab，管理 settings |
+| `HomepageView` | `view.ts` | ItemView，渲染整个首页 UI，包含所有组件和交互逻辑 |
+| `HomepageSettingTab` | `settings.ts` | 设置面板 |
+| `TodoAddModal` | `modals.ts` | 添加待办的弹窗（继承 Modal） |
+| `DesktopFolderModal` | `modals.ts` | 超级桌面文件夹路径配置弹窗（继承 Modal） |
 
 ### 组件系统
 
