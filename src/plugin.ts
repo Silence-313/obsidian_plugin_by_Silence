@@ -1,6 +1,7 @@
 import { Plugin } from "obsidian";
 import type { HomepageSettings } from "./types";
-import { VIEW_TYPE_HOMEPAGE, VIEW_TYPE_STUDY, DEFAULT_COMPONENTS, DEFAULT_SETTINGS, DEFAULT_STUDY_SETTINGS } from "./constants";
+import { VIEW_TYPE_HOMEPAGE, VIEW_TYPE_STUDY, DEFAULT_COMPONENTS, DEFAULT_SETTINGS, DEFAULT_STUDY_SETTINGS, DEFAULT_LLMWIKI_SETTINGS } from "./constants";
+import { loadApiKeyFromKeychain } from "./utils";
 import HomepageView from "./view";
 import StudyView from "./study-view";
 import { StudyController } from "./study-controller";
@@ -10,6 +11,7 @@ export default class HomepagePlugin extends Plugin {
   settings: HomepageSettings = DEFAULT_SETTINGS;
   studyController!: StudyController;
   private studyCloseTimer: number | null = null;
+  private wikiMaintenanceTimer: number | null = null;
 
   async onload() {
     await this.loadSettings();
@@ -41,6 +43,12 @@ export default class HomepagePlugin extends Plugin {
       id: "study-capture-screenshot",
       name: "学习模式：截图",
       callback: () => this.studyController.captureScreenshot(),
+    });
+
+    this.addCommand({
+      id: "llmwiki-maintain",
+      name: "LLM Wiki：维护知识库",
+      callback: () => this.runWikiMaintenance(),
     });
 
     this.registerEvent(
@@ -79,12 +87,43 @@ export default class HomepagePlugin extends Plugin {
       }
     });
 
+    this.startWikiMaintenanceTimer();
     this.addSettingTab(new HomepageSettingTab(this.app, this));
   }
 
   onunload() {
+    if (this.wikiMaintenanceTimer !== null) {
+      window.clearInterval(this.wikiMaintenanceTimer);
+      this.wikiMaintenanceTimer = null;
+    }
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_HOMEPAGE);
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_STUDY);
+  }
+
+  private startWikiMaintenanceTimer() {
+    // Check every 60 seconds if it's 13:00
+    this.wikiMaintenanceTimer = window.setInterval(() => {
+      if (!this.settings.llmWiki.autoMaintain) return;
+      if (!this.settings.llmWiki.apiKeyInKeychain && !this.settings.llmWiki.apiKey) return;
+
+      const now = new Date();
+      if (now.getHours() === 13 && now.getMinutes() === 0) {
+        const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+        if (this.settings.llmWiki.lastMaintenance.startsWith(today)) return;
+
+        this.runWikiMaintenance();
+      }
+    }, 60000);
+  }
+
+  async runWikiMaintenance() {
+    const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_HOMEPAGE);
+    if (leaves.length === 0) return;
+
+    const view = leaves[0].view as any;
+    if (view?.llmwiki?.buildWiki) {
+      await view.llmwiki.buildWiki();
+    }
   }
 
   async openHomepage() {
@@ -112,6 +151,11 @@ export default class HomepagePlugin extends Plugin {
       this.settings.studyMode = Object.assign({}, DEFAULT_STUDY_SETTINGS);
     } else {
       this.settings.studyMode = Object.assign({}, DEFAULT_STUDY_SETTINGS, this.settings.studyMode);
+    }
+    if (!this.settings.llmWiki) {
+      this.settings.llmWiki = Object.assign({}, DEFAULT_LLMWIKI_SETTINGS);
+    } else {
+      this.settings.llmWiki = Object.assign({}, DEFAULT_LLMWIKI_SETTINGS, this.settings.llmWiki);
     }
   }
 

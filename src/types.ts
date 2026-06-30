@@ -28,6 +28,22 @@ export interface StudySettings {
   history: string[];
 }
 
+export interface LlmWikiSettings {
+  apiKey: string;
+  apiKeyInKeychain: boolean;
+  apiEndpoint: string;
+  model: string;
+  wikiFolder: string;
+  autoMaintain: boolean;
+  lastMaintenance: string;
+}
+
+export interface ChatMessage {
+  role: "user" | "assistant" | "activity";
+  content: string;
+  timestamp: number;
+}
+
 export interface HomepageSettings {
   userName: string;
   todos: TodoItem[];
@@ -36,4 +52,5 @@ export interface HomepageSettings {
   desktopFolders: string[];
   desktopNames: string[];
   studyMode: StudySettings;
+  llmWiki: LlmWikiSettings;
 }

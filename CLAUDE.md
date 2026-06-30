@@ -45,7 +45,10 @@ src/                 # 源码目录
     desktop.ts       # DesktopComponent — 超级桌面：文件网格、导航、多实例管理
     sidebar.ts       # SidebarComponent — 侧边栏：组件列表、拖拽、搜索过滤
     todolist.ts      # TodoListComponent — 待办列表：嵌入/独立模式、甘特图、Tab 切换
+    llmwiki.ts       # LlmWikiComponent — LLM Wiki：DeepSeek API 对话、知识库维护、Agent 工具调用
+	    wiki-graph.ts    # WikiGraphComponent — Wiki 图谱：Canvas 2D 力导向布局、拖拽/缩放/点击交互
 manifest.json        # 插件元数据
+DESCRIPTION.md       # 插件功能详细描述文档（面向用户，完整功能说明）
 esbuild.config.mjs   # esbuild 打包配置（入口 src/main.ts，输出到 vault）
 styles.css           # 日历 hover 样式
 ```
@@ -64,8 +67,10 @@ styles.css           # 日历 hover 样式
 | `HomepageSettingTab` | `settings.ts` | 设置面板 |
 | `TodoAddModal` | `modals.ts` | 添加待办的弹窗（继承 Modal） |
 | `DesktopFolderModal` | `modals.ts` | 超级桌面文件夹路径配置弹窗（继承 Modal） |
+| `LlmWikiComponent` | `components/llmwiki.ts` | LLM Wiki：Agent 对话、知识库维护（karpathy 方法论）、每日 13:00 自动维护、macOS Keychain 加密存 API Key |
 | `StudyView` | `study-view.ts` | 学习模式 ItemView：iframe 浏览器、视频平台 embed 转换、拖拽选取框 |
 | `StudyController` | `study-controller.ts` | 学习模式编排：split 布局、4 层截图策略、编辑器插入 |
+| `WikiGraphComponent` | `components/wiki-graph.ts` | Wiki 图谱：Canvas 2D 渲染、Fruchterman-Reingold 力导向布局、拖拽/缩放/点击打开文件 |
 
 ### 组件架构
 
@@ -86,6 +91,8 @@ styles.css           # 日历 hover 样式
 - **超级桌面** (`id: "desktop"`)：多实例文件浏览器，每个实例可绑定 vault 下不同文件夹，网格展示文件/文件夹（emoji 图标），双击 md 文件在 Obsidian 新标签页打开，其余类型用系统默认应用打开。支持 `📁+`/`📝+` 内联创建文件夹/Markdown 文件（输入框直接出现在图标下方，回车确认、Esc 取消）、右键菜单删除文件/文件夹（移至回收站）、`+` 新增实例、`×` 删除实例（≥2 个时显示）、标题可内联编辑，默认未添加。实例通过 `desktopFolders[i]` / `desktopNames[i]` 存储，卡片布局键为 `desktop-{i}`
 - **待办列表** (`id: "todolist"`)：时间范围待办视图，Tab 切换今天/本周/本月。今天模式支持纵向甘特图（细线+右侧文字），按开始/结束时间展示时间段。待办项复用 `todos` 数组与日程中心双向同步。与日程中心同时启用时，待办列表卡片隐藏，内容嵌入日程中心右侧面板替代原始待办区域。默认未添加
 - **学习模式** (`id: "study"`)：打开 Markdown 文件时自动在左侧创建 split，iframe 内嵌浏览器。输入网址或关键词即可搜索浏览，YouTube/Bilibili/Vimeo 等视频平台自动转为嵌入式播放器（embed URL），支持一边看视频一边记笔记。工具栏有前进/后退/刷新/截图/历史记录。截图点击后显示可拖拽选取框（Enter 截取/Esc 取消），4 层截图策略：Canvas → macOS `screencapture` → `getUserMedia` → 视频缩略图。默认未添加
+- **LLM Wiki** (`id: "llmwiki"`)：用户提供 DeepSeek API Key（存储在 macOS Keychain 中），插件读取 vault 笔记 + 待办 + 日程构建知识库（karpathy 方法论：Raw Sources → Wiki → Schema 三层架构）。支持与知识库对话（Agent 模式，含 `get_current_time`、`get_todos`、`get_todo_stats` 工具调用）。对话记录持久化到 `chat-log.md`，维护时自动消化并更新 `concepts/用户画像.md`。每日 13:00 自动维护，也可手动触发。默认未添加
+- **Wiki 图谱** (`id: "wikigraph"`)：Canvas 2D 渲染 LLM Wiki 关系图谱。解析 wiki 目录（summaries/concepts/index/overview）和源笔记，提取 [[wikilinks]] 构建节点和边（4 种类型着色：橙/绿/蓝/紫）。Fruchterman-Reingold 力导向布局（斥力/引力等比 strength=0.12），拖拽节点、滚轮缩放、平移、点击打开文件，稳定后自动停止物理循环。所有参数通过 sizeScale 动态适配视口。默认未添加
 
 ### 卡片系统
 
@@ -114,11 +121,30 @@ styles.css           # 日历 hover 样式
 - 超级桌面多实例：`desktopCurrentPaths: string[]` 为非持久化导航状态，`desktopFolders: string[]` / `desktopNames: string[]` 持久化在 settings 中，`addDesktopInstance()` / `removeDesktopInstance(i)` 增删实例后调用 `render()` 重建 DOM
 - 侧边栏：作为 container 直接子元素（非 `#homepage-content` 子元素），`position: absolute` + 动态 `top = header.offsetHeight` 使其固定在 header 下方不随内容滚动。展开宽度 236px（刚好容纳 3 个 64px 组件图标横向排列）。展开时点击 overlay 自动关闭
 - TodoItem 新增可选字段 `startTime?: string` / `endTime?: string`（"HH:MM"），兼容旧数据。`TodoAddModal` 新增时间选择器（`<input type="time">`），`addTodo` 签名改为 5 参数
-- 待办列表甘特图：`renderGanttView()` 以 `HOUR_H=40` + `STRIP_W=5` 细线 + 右侧文字展示，`parseMinutes()` 解析时间字符串，`getWeekRange()` / `getMonthRange()` 计算周/月范围
+- 待办列表甘特图：`renderGanttView()` 以 `HOUR_H=40` + `STRIP_W=5` 细线 + 右侧文字展示，`parseMinutes()` 解析时间字符串。时间重叠的待办通过贪心泳道分配算法（按开始时间排序→分配非重叠 lane→平分宽度）避免文字叠压，`getWeekRange()` / `getMonthRange()` 计算周/月范围
 - 待办列表联动：`refreshTodoListView()` 根据两者是否同时启用自动分发 → `renderTodoListEmbedded()`（嵌入日程右侧面板，渲染完整 Tab+内容到 `#homepage-todo`）或 `renderTodoListStandalone()`（独立卡片，渲染到 `#homepage-todolist-content`），共享渲染逻辑在 `renderTodoListContent()`
 - 所有卡片 wrapper 必须在 `#homepage-content` 内部（`position: relative`），否则不跟随滚动且碰撞检测感知不到
 - `getOtherCardBounds()` 用 `[data-component-wrapper]` 属性选择器选中所有卡片，排除自身并跳过 `!el.style.left` 的未定位卡片。`data-component-wrapper="true"` 在 render() 中统一添加到各 wrapper div
 - pointermove 拖拽时，`constrainNoOverlap` 可能把卡片推出边界（如 y=−252），`Math.max(0, y)` 裁切后可能仍重叠。因此 pointermove 做了 constrain+clamp 循环（最多 5 次），直到位置稳定
+
+### LLM Wiki 实现细节
+
+- **API Key 存储**：使用 macOS Keychain（`security add-generic-password` / `security find-generic-password -w`），data.json 只存 `apiKeyInKeychain: true` 标记位。设置界面显示 `password` 类型掩码输入框，读写通过 `utils.ts` 中的 `saveApiKeyToKeychain()` / `loadApiKeyFromKeychain()` / `deleteApiKeyFromKeychain()`
+- **知识库构建（buildWiki）**：扫描 vault 所有 .md 笔记 → 逐篇调用 DeepSeek API 生成摘要 → 生成 index.md + overview.md + 用户画像 → 临时待办页面在维护后删除。笔记增量更新通过 `source-mtime` 跟踪
+- **Agent 工具系统**：`AGENT_TOOLS` 数组定义工具（OpenAI function-calling 格式），`executeTool()` 本地分发执行，`agentLoop()` 多轮对话循环处理 tool_calls（最多 5 轮）。当前工具：`get_current_time`、`get_todos`（按日期/状态/优先级/关键词筛选）、`get_todo_stats`（统计概览）、`add_todos`（添加待办到任意日期，Agent 根据当前时间推算目标日期）。System prompt 禁止使用 Markdown 表格（渲染有 bug，用列表替代）
+- **记忆管线**：每次对话 → `appendChatLog()` 追加到 `llm-wiki/chat-log.md` → 维护时 `generateUserProfile()` 消化对话 + 现有画像 → `concepts/用户画像.md` → 清空 chat-log.md
+- **Markdown 渲染**：`formatMessage()` 分 4 阶段渲染：代码块保护 → 块级元素（标题/h1-h6、分割线、引用、有序/无序列表）→ 内联元素（链接、粗体、斜体、行内代码、删除线）→ 代码块还原
+- **API 调用**：`callDeepSeekRaw()` 统一入口，`withTools=true` 时附加 `tools` + `tool_choice: "auto"`。对话用 `deepseek-chat` 模型，temperature 0.7，max_tokens 4096
+
+### Wiki 图谱实现细节
+
+- **数据解析**：`parseWikiFiles()` 扫描 vault 源笔记 + wiki 目录文件，从内容中正则提取 `[[wikilinks]]` 构建边，YAML frontmatter `source:` 字段链接摘要。源笔记
+- **力导向布局**：标准 Fruchterman-Reingold 算法，`k = sqrt(cardW*cardH / n)` 自适应理想间距，斥力和引力等比 scale 到 `strength`（当前 0.12），平衡距离保持在 k
+- **物理循环**：`tick()` 驱动，300 帧自动 fitToView + 停止循环。拖拽节点后重启 80 帧快速 settle。缩放/平移用单帧 wakeDraw() 不启动物理
+- **动态适配**：所有视觉/物理参数通过 `s = sqrt(cardW*cardH) / 548` 等比缩放（参考尺寸 600×500），节点半径/边线宽/字号/速度上限等统一乘 s
+- **Canvas 渲染**：Retina 适配（devicePixelRatio），节点按类型着色（源笔记橙/摘要绿/概念蓝/索引紫），悬停高亮+tooltip
+- **边界约束**：上边界留 60px 给工具栏，其余三边留 radius+4px。重力和初始中心下移 30px 补偿工具栏偏移
+- **交互**：mousedown 命中节点→拖拽，命中空白→平移。wheel→缩放（0.2x-3x）。双击→打开文件
 
 ### 学习模式实现细节
 

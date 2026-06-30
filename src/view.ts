@@ -8,6 +8,8 @@ import { TimerComponent } from "./components/timer";
 import { DesktopComponent } from "./components/desktop";
 import { SidebarComponent } from "./components/sidebar";
 import { TodoListComponent } from "./components/todolist";
+import { LlmWikiComponent } from "./components/llmwiki";
+import { WikiGraphComponent } from "./components/wiki-graph";
 
 
 export default class HomepageView extends ItemView {
@@ -21,6 +23,8 @@ export default class HomepageView extends ItemView {
   desktop: DesktopComponent;
   sidebar: SidebarComponent;
   todolist: TodoListComponent;
+  llmwiki: LlmWikiComponent;
+  wikigraph: WikiGraphComponent;
 
   constructor(leaf: WorkspaceLeaf, plugin: HomepagePlugin) {
     super(leaf);
@@ -30,6 +34,8 @@ export default class HomepageView extends ItemView {
     this.desktop = new DesktopComponent(this);
     this.sidebar = new SidebarComponent(this);
     this.todolist = new TodoListComponent(this);
+    this.llmwiki = new LlmWikiComponent(this);
+    this.wikigraph = new WikiGraphComponent(this);
   }
 
   getViewType(): string {
@@ -55,6 +61,7 @@ export default class HomepageView extends ItemView {
       this.intervalId = null;
     }
     this.timer.cleanup();
+    this.wikigraph.cleanup();
     if (this.cardResizeObserver) {
       this.cardResizeObserver.disconnect();
       this.cardResizeObserver = null;
@@ -474,6 +481,54 @@ export default class HomepageView extends ItemView {
             "></div>
           </div>
         </div>
+        <div id="homepage-llmwiki-wrapper" data-component-id="llmwiki" data-component-wrapper="true" style="
+          position: absolute;
+          resize: both;
+          overflow: hidden;
+          width: 500px;
+          height: 500px;
+          min-width: 360px;
+          min-height: 360px;
+          max-width: 100%;
+          border-radius: 14px;
+          box-shadow: 0 4px 24px rgba(0,0,0,0.12), 0 0 0 1px var(--background-modifier-border);
+          display: ${this.isComponentAdded("llmwiki") ? "block" : "none"};
+        ">
+          <div id="homepage-llmwiki-card" style="
+            display: flex;
+            flex-direction: column;
+            width: 100%;
+            height: 100%;
+            background: var(--background-primary);
+            overflow: hidden;
+            border-radius: 14px;
+            position: relative;
+          "></div>
+        </div>
+        <div id="homepage-wikigraph-wrapper" data-component-id="wikigraph" data-component-wrapper="true" style="
+          position: absolute;
+          resize: both;
+          overflow: hidden;
+          width: 600px;
+          height: 500px;
+          min-width: 400px;
+          min-height: 360px;
+          max-width: 100%;
+          border-radius: 14px;
+          box-shadow: 0 4px 24px rgba(0,0,0,0.12), 0 0 0 1px var(--background-modifier-border);
+          display: ${this.isComponentAdded("wikigraph") ? "block" : "none"};
+        ">
+          <div id="homepage-wikigraph-card" style="
+            display: flex;
+            flex-direction: column;
+            width: 100%;
+            height: 100%;
+            background: var(--background-primary);
+            overflow: hidden;
+            border-radius: 14px;
+            position: relative;
+          "></div>
+        </div>
       </div>
       <div id="homepage-sidebar" style="
         position: absolute;
@@ -521,6 +576,16 @@ export default class HomepageView extends ItemView {
     if (this.isComponentAdded("todolist") && !this.isComponentAdded("schedule")) {
       this.todolist.renderStandalone();
       this.setupCardPosition(container, "todolist", "#homepage-todolist-wrapper");
+    }
+
+    if (this.isComponentAdded("llmwiki")) {
+      this.llmwiki.render();
+      this.setupCardPosition(container, "llmwiki", "#homepage-llmwiki-wrapper");
+    }
+
+    if (this.isComponentAdded("wikigraph")) {
+      this.wikigraph.render();
+      this.setupCardPosition(container, "wikigraph", "#homepage-wikigraph-wrapper");
     }
 
     if (!this.isComponentAdded("study")) {

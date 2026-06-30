@@ -160,6 +160,7 @@ export class TodoListComponent {
     const STRIP_W = 5;
     const BAR_LEFT = LABEL_W + 4;
     const BAR_RIGHT = 4;
+    const LANE_GAP = 3;
 
     let minMin = 24 * 60, maxMin = 0;
     for (const t of timed) {
@@ -172,6 +173,34 @@ export class TodoListComponent {
     const endHour = Math.ceil(maxMin / 60);
     const totalH = endHour - startHour;
     const totalHeight = totalH * HOUR_H;
+
+    // Assign non-overlapping lanes to prevent text overlap
+    const sorted = [...timed].sort((a, b) => {
+      const sa = this.parseMinutes(a.startTime!);
+      const sb = this.parseMinutes(b.startTime!);
+      return sa !== sb ? sa - sb : this.parseMinutes(b.endTime!) - this.parseMinutes(a.endTime!);
+    });
+    const lanes: Array<{ endMin: number; todo: TodoItem }[]> = [];
+    const todoLane: Map<string, number> = new Map();
+    for (const t of sorted) {
+      const sm = this.parseMinutes(t.startTime!);
+      const em = this.parseMinutes(t.endTime!);
+      let assigned = false;
+      for (let i = 0; i < lanes.length; i++) {
+        if (lanes[i][lanes[i].length - 1].endMin <= sm) {
+          lanes[i].push({ endMin: em, todo: t });
+          todoLane.set(t.id, i);
+          assigned = true;
+          break;
+        }
+      }
+      if (!assigned) {
+        lanes.push([{ endMin: em, todo: t }]);
+        todoLane.set(t.id, lanes.length - 1);
+      }
+    }
+    const laneCount = lanes.length;
+    const totalBarW = `calc(100% - ${BAR_LEFT + BAR_RIGHT}px)`;
 
     let html = `<div style="position:relative; width:100%; height:${totalHeight + 16}px;">`;
 
@@ -186,12 +215,15 @@ export class TodoListComponent {
       const endMin = this.parseMinutes(t.endTime!);
       const top = ((startMin - startHour * 60) / 60) * HOUR_H;
       const h = Math.max(16, ((endMin - startMin) / 60) * HOUR_H);
+      const lane = todoLane.get(t.id) ?? 0;
+      const laneW = `calc((${totalBarW} - ${(laneCount - 1) * LANE_GAP}px) / ${laneCount})`;
+      const laneLeft = `calc(${BAR_LEFT}px + ${lane} * (${laneW} + ${LANE_GAP}px))`;
 
       html += `
         <div class="todolist-gantt-bar" data-id="${t.id}" style="
           position: absolute;
-          left: ${BAR_LEFT}px;
-          right: ${BAR_RIGHT}px;
+          left: ${laneLeft};
+          width: ${laneW};
           top: ${top}px;
           height: ${h}px;
           cursor: pointer;

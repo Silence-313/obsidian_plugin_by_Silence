@@ -29,3 +29,64 @@ export function formatDate(date: Date): string {
   const w = weekdays[date.getDay()];
   return `${y}年${m}月${d}日 ${w}`;
 }
+
+// ── macOS Keychain helpers ──────────────────────────────────
+
+const KEYCHAIN_SERVICE = "obsidian-homepage-llmwiki";
+const KEYCHAIN_ACCOUNT = "deepseek-api-key";
+
+function getCp(): any {
+  try {
+    return (window as any).require?.("child_process");
+  } catch {
+    return null;
+  }
+}
+
+export function saveApiKeyToKeychain(apiKey: string): boolean {
+  const cp = getCp();
+  if (!cp?.execSync) return false;
+  try {
+    // Delete existing entry first
+    cp.execSync(
+      `security delete-generic-password -s "${KEYCHAIN_SERVICE}" -a "${KEYCHAIN_ACCOUNT}" 2>/dev/null`,
+      { encoding: "utf-8" }
+    );
+    // Add new entry
+    cp.execSync(
+      `security add-generic-password -s "${KEYCHAIN_SERVICE}" -a "${KEYCHAIN_ACCOUNT}" -w "${apiKey.replace(/"/g, '\\"')}" -U`,
+      { encoding: "utf-8" }
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function loadApiKeyFromKeychain(): string | null {
+  const cp = getCp();
+  if (!cp?.execSync) return null;
+  try {
+    const result = cp.execSync(
+      `security find-generic-password -s "${KEYCHAIN_SERVICE}" -a "${KEYCHAIN_ACCOUNT}" -w 2>/dev/null`,
+      { encoding: "utf-8" }
+    );
+    return result?.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+export function deleteApiKeyFromKeychain(): boolean {
+  const cp = getCp();
+  if (!cp?.execSync) return false;
+  try {
+    cp.execSync(
+      `security delete-generic-password -s "${KEYCHAIN_SERVICE}" -a "${KEYCHAIN_ACCOUNT}" 2>/dev/null`,
+      { encoding: "utf-8" }
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
