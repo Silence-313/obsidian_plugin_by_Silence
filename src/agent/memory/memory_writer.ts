@@ -5,6 +5,8 @@
 import type { EpisodicMemory, EpisodicEntry } from "./episodic_memory";
 import type { UserProfile } from "./user_profile";
 import type { ToolMemory } from "./tool_memory";
+import type { MarkdownMemoryStore } from "./memory_store";
+import { ConceptExtractor } from "./concept_extractor";
 import { consolidate, mergeMemories, type ScoredMemory } from "../system_evolution";
 
 export interface MemoryWriteDecision {
@@ -32,11 +34,20 @@ export class MemoryWriter {
   private episodic: EpisodicMemory;
   private profile: UserProfile;
   private toolMemory: ToolMemory;
+  private markdownStore?: MarkdownMemoryStore;
+  private conceptExtractor: ConceptExtractor;
 
-  constructor(episodic: EpisodicMemory, profile: UserProfile, toolMemory: ToolMemory) {
+  constructor(
+    episodic: EpisodicMemory,
+    profile: UserProfile,
+    toolMemory: ToolMemory,
+    markdownStore?: MarkdownMemoryStore,
+  ) {
     this.episodic = episodic;
     this.profile = profile;
     this.toolMemory = toolMemory;
+    this.markdownStore = markdownStore;
+    this.conceptExtractor = new ConceptExtractor();
   }
 
   /**
@@ -120,7 +131,7 @@ export class MemoryWriter {
             }
 
             const entryType = this.classifyEpisodicType(interaction, d.tags);
-            this.episodic.add({
+            const newEntry = this.episodic.add({
               type: entryType,
               summary: d.content.substring(0, 200),
               detail: `User: ${interaction.userMessage.substring(0, 300)}\nAgent: ${interaction.assistantResponse.substring(0, 300)}`,
@@ -134,6 +145,12 @@ export class MemoryWriter {
               usefulnessScore: 0.5,
               markedForRemoval: false,
             });
+            // Immediate markdown write for new episodic entry
+            if (this.markdownStore) {
+              this.markdownStore.writeEpisode(newEntry).catch(() => { /* best-effort */ });
+              // Concept extraction: surface key concepts from this episode
+              this.extractAndLinkConcepts(newEntry).catch(() => { /* best-effort */ });
+            }
           }
           break;
 
@@ -311,6 +328,58 @@ export class MemoryWriter {
     if (tags.includes("milestone")) return "milestone";
     if (tags.includes("question")) return "question";
     return "event";
+  }
+
+  // ── Concept Extraction Pipeline ───────────────────────────
+
+  /**
+   * After writing an episode to markdown, extract key concepts,
+   * create/update concept files, and cross-link episode ↔ concept.
+   */
+  private async extractAndLinkConcepts(entry: EpisodicEntry): Promise<void> {
+    if (!this.markdownStore) return;
+
+    try {
+      // Build content string for extraction
+      const episodeContent = `# ${entry.summary}\n\n${entry.detail}\n\nTags: ${entry.tags.join(", ")}`;
+
+      // Load existing concept slugs for matching
+      const existingSlugs = await this.markdownStore.getAllConceptSlugs();
+
+      // Extract concepts via heuristic
+      const concepts = this.conceptExtractor.extract(episodeContent, existingSlugs);
+      if (concepts.length === 0) return;
+
+      // Get the episode file name for linking
+      const episodeFileName = this.markdownStore.episodeFileName(entry);
+
+      const linkedSlugs: string[] = [];
+
+      for (const concept of concepts) {
+        // Write concept file (create or update)
+        await this.markdownStore.writeConcept({
+          id: `concept-${concept.slug}`,
+          name: concept.name,
+          slug: concept.slug,
+          tags: ["concept", ...entry.tags.slice(0, 2)],
+          related: [],
+          sourceEpisodes: episodeFileName ? [episodeFileName] : [],
+          definition: `Concept extracted from episode: ${entry.summary.substring(0, 100)}`,
+          created: Date.now(),
+          updated: Date.now(),
+          confidence: concept.confidence,
+        });
+
+        linkedSlugs.push(concept.slug);
+      }
+
+      // Update the episode file with [[concept]] wikilinks
+      if (linkedSlugs.length > 0) {
+        await this.markdownStore.updateEpisodeConceptLinks(entry.id, linkedSlugs);
+      }
+    } catch {
+      // Concept extraction is best-effort; never block memory writes
+    }
   }
 
   // ── Memory Maintenance Cycle ──────────────────────────────

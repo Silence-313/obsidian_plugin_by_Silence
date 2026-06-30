@@ -47,20 +47,29 @@ src/                 # 源码目录
     todolist.ts      # TodoListComponent — 待办列表：嵌入/独立模式、甘特图、Tab 切换
     llmwiki.ts       # LlmWikiComponent — LLM Wiki：DeepSeek API 对话、知识库维护、委托 AgentOrchestrator
 	    wiki-graph.ts    # WikiGraphComponent — Wiki 图谱：Canvas 2D 力导向布局、拖拽/缩放/点击交互
-  agent/             # Agent 模块目录（Memory-Augmented 架构）
+  agent/             # Agent 模块 — 5 层认知系统
     index.ts          # 模块 barrel export
-    agent_orchestrator.ts  # AgentOrchestrator — 中央管线：Router→Memory→LLM→Tools→MemoryWriter→Response
+    agent_orchestrator.ts  # AgentOrchestrator — 中央管线（5 层全集成）
     tool_router.ts    # 工具路由：评分式意图分类（keywords+patterns+adaptive thresholds）
     vector_wiki_store.ts   # TF-IDF + 余弦相似度语义检索，RAG 反馈权重调整
     router_telemetry.ts    # 路由学习：自适应阈值、策略权重演化、per-tool 成功率追踪
     rag_feedback.ts        # RAG 反馈环：文档权重调整、查询聚类、负信号下权重
     system_evolution.ts    # 系统演化：记忆衰减/强化/合并、安全门（±0.05 clamp、3次确认）
-    memory/
+    memory/           # Layer 1-2：记忆 + 概念
       working_memory.ts    # 短期记忆：最近 N 条对话（纯内存）
       episodic_memory.ts   # 情景记忆：事件/目标/决策，演化评分字段，衰减+强化
       user_profile.ts      # 用户画像：结构化属性+置信度追踪
       tool_memory.ts       # 工具记忆：使用频率/成功率/上下文有效性
-      memory_writer.ts     # 记忆写入：交互后分类+合并去重+定期维护
+      memory_writer.ts     # 记忆写入：交互后分类+合并去重+概念提取+链接
+      memory_store.ts      # MarkdownMemoryStore：Markdown 持久化（episodes/concepts/reasoning/policy 全管理）
+      concept_extractor.ts # 启发式概念提取（标题/二元组/三元组/英文复合词）
+    reasoning/        # Layer 3-4：推理 + 反馈
+      concept_graph_builder.ts # 概念图构建 + 1-hop 子图展开
+      concept_reasoner.ts      # 3 策略推理引擎（图遍历/模式匹配/抽象）
+      feedback_processor.ts    # 认知反馈：追踪存储 + 权重增强 + 策略学习
+      concept_evolver.ts       # 概念演化：合并/分裂/衰减
+    policy/           # Layer 5：全局认知控制
+      drift_controller.ts      # 漂移控制：偏好平衡/稳定性约束/压缩信号/健康监测
 manifest.json        # 插件元数据
 DESCRIPTION.md       # 插件功能详细描述文档（面向用户，完整功能说明）
 esbuild.config.mjs   # esbuild 打包配置（入口 src/main.ts，输出到 vault）
@@ -88,6 +97,13 @@ styles.css           # 日历 hover 样式
 | `StudyView` | `study-view.ts` | 学习模式 ItemView：iframe 浏览器、视频平台 embed 转换、拖拽选取框 |
 | `StudyController` | `study-controller.ts` | 学习模式编排：split 布局、4 层截图策略、编辑器插入 |
 | `WikiGraphComponent` | `components/wiki-graph.ts` | Wiki 图谱：Canvas 2D 渲染、Fruchterman-Reingold 力导向布局、拖拽/缩放/点击打开文件 |
+| `MarkdownMemoryStore` | `agent/memory/memory_store.ts` | Markdown 记忆持久化：episodes/concepts/reasoning traces/policy 全管理，YAML frontmatter 序列化 |
+| `ConceptExtractor` | `agent/memory/concept_extractor.ts` | 启发式概念提取：标题/二元组/三元组/英文复合词评分 |
+| `ConceptGraphBuilder` | `agent/reasoning/concept_graph_builder.ts` | 概念图构建：3 种边类型（related/shared-episode/tag-overlap），1-hop 子图展开 |
+| `ConceptReasoner` | `agent/reasoning/concept_reasoner.ts` | 3 策略推理：图遍历（关系+桥接）/模式匹配（关键概念+强关联）/抽象（概念簇+洞察+矛盾） |
+| `FeedbackProcessor` | `agent/reasoning/feedback_processor.ts` | 认知反馈：推理追踪存储、概念权重增强、策略学习、洞察频率追踪 |
+| `ConceptEvolver` | `agent/reasoning/concept_evolver.ts` | 概念演化：合并（≥70% episode 重叠）、分裂检测、衰减（≥7天未使用 -0.05） |
+| `DriftController` | `agent/policy/drift_controller.ts` | 全局认知控制：偏好平衡、稳定性约束、压缩信号检测、认知健康评分 |
 
 ### 组件架构
 
@@ -146,51 +162,86 @@ LlmWikiComponent 的 agent 逻辑全部委托给 `AgentOrchestrator`（`src/agen
 - `getOtherCardBounds()` 用 `[data-component-wrapper]` 属性选择器选中所有卡片，排除自身并跳过 `!el.style.left` 的未定位卡片。`data-component-wrapper="true"` 在 render() 中统一添加到各 wrapper div
 - pointermove 拖拽时，`constrainNoOverlap` 可能把卡片推出边界（如 y=−252），`Math.max(0, y)` 裁切后可能仍重叠。因此 pointermove 做了 constrain+clamp 循环（最多 5 次），直到位置稳定
 
-### Agent 架构（Memory-Augmented Agent System）
+### Agent 架构（5 层认知系统）
 
-Agent 系统采用模块化 Memory-Augmented 架构，所有 agent 逻辑从 UI 组件中解耦到 `src/agent/` 目录。
+Agent 系统已演化为 **5 层自我改进认知系统**，所有逻辑从 UI 组件中解耦到 `src/agent/` 目录。
 
 **执行管线**（`AgentOrchestrator.process()`）：
 
 ```
-User Input → Tool Router → Memory Retrieval → LLM Reasoning → Tool Execution → Memory Writer → Response
-                                                                                      ↓
-                                                                              Evolution Cycle (每10次)
+User Input
+  → Tool Router (评分式意图分类)
+  → Memory Retrieval (vector wiki + episodic + profile)
+  → Concept Reasoning (子图构建 + 3策略推理 + 策略感知种子选择)
+  → Enhanced Prompt (注入推理上下文: 关键概念/关系/洞察/桥接/矛盾)
+  → LLM Probe + Stream
+  → Tool Execution (本地 switch/case)
+  → Memory Writer (episode 持久化)
+  → Concept Extraction (启发式提取 + 概念文件 + episode↔concept 链接)
+  → Cognitive Feedback (追踪存储 + 概念权重增强 + 策略学习)
+  → Periodic Health Check (每15次: 压缩信号/认知健康评分)
+  → Evolution Cycle (每10次: 记忆衰减+合并; 每20次: 概念演化合并/分裂/衰减)
 ```
 
-**核心模块**：
+**5 层架构**：
 
-| 模块 | 职责 |
-|------|------|
-| `tool_router.ts` | 评分式意图分类（keywords + regex patterns + adaptive weights），支持 RouterTelemetry 自适应阈值 |
-| `vector_wiki_store.ts` | TF-IDF + 余弦相似度语义检索（纯 JS，无外部依赖），支持 RAG 反馈权重调整 |
-| `agent_orchestrator.ts` | 中央管线编排，持有所有子系统，注入 RouterTelemetry + RagFeedback |
-| `memory/` | 4 层记忆：working（短期对话）、episodic（事件/目标/决策，含演化评分）、profile（结构化画像+置信度）、tool（使用统计） |
-| `memory_writer.ts` | 交互后记忆分类写入，含合并去重（consolidation）和定期维护（decay + soft removal） |
+| 层 | 目录 | 职责 | 存储 |
+|----|------|------|------|
+| **Layer 1: Memory** | `memory/` | 短期工作记忆 + 情景记忆(演化评分) + 用户画像 + 工具统计，Markdown 持久化 | `agent-memory/episodes/*.md`, `profile.md` |
+| **Layer 2: Concepts** | `memory/` | 启发式概念提取 + 概念 Markdown 文件 + episode↔concept [[wikilink]] 双向链接 | `agent-memory/concepts/*.md` |
+| **Layer 3: Reasoning** | `reasoning/` | 概念图(3边类型) + 1-hop 子图 + 3策略推理(图遍历/模式匹配/抽象) + 提示增强 | 内存(无持久化) |
+| **Layer 4: Feedback** | `reasoning/` | 推理追踪存储 + 概念权重增强(±0.05) + 概念演化(合并/分裂/衰减) + 洞察频率追踪 | `agent-memory/reasoning/*.md` |
+| **Layer 5: Policy** | `policy/` | 全局认知策略(领域偏好/策略权重/探索率) + 漂移控制(平衡/约束) + 压缩信号 + 健康监测 | `agent-memory/policy/cognitive_policy.json` |
 
-**演化系统**（3 个闭环）：
+**核心类**：
 
-| 闭环 | 模块 | 功能 |
-|------|------|------|
-| Memory Evolution | `system_evolution.ts` + `episodic_memory.ts` | 衰减（指数衰减+使用阻尼）、强化（5 种信号类型）、合并（Jaccard 相似度 >0.85）、软删除标记 |
-| Router Learning | `router_telemetry.ts` + `tool_router.ts` | Per-tool 成功率追踪、自适应置信度阈值（成功↑→降阈值，失败↑→升阈值）、策略权重演化（70%基重+30%学习权重） |
-| RAG Optimization | `rag_feedback.ts` + `vector_wiki_store.ts` | 检索反馈（文档相关性/答案影响评分）、查询聚类（关键词签名哈希）、负信号下权重（永不删除，最低 0.1） |
+| 类 | 层 | 文件 | 职责 |
+|----|-----|------|------|
+| `MarkdownMemoryStore` | 1-5 | `memory/memory_store.ts` | 统一 Markdown 持久化：episodes/concepts/reasoning traces/policy 的 CRUD + 概念合并/权重调整/关系标记 |
+| `ConceptExtractor` | 2 | `memory/concept_extractor.ts` | 启发式概念提取：标题(+0.35)/二元组(×0.3)/三元组(×0.5)/英文复合词(×0.4) |
+| `ConceptGraphBuilder` | 3 | `reasoning/concept_graph_builder.ts` | 概念图构建：related 边(0.8)/shared-episode 边(0.3+)/tag-overlap 边(0.3+) |
+| `ConceptReasoner` | 3 | `reasoning/concept_reasoner.ts` | 3策略推理：图遍历→关系+桥接 / 模式匹配→关键概念+强关联 / 抽象→概念簇+洞察+矛盾 |
+| `FeedbackProcessor` | 4 | `reasoning/feedback_processor.ts` | 认知反馈：追踪存储 + 权重增强 + 策略学习(领域/策略自适应) |
+| `ConceptEvolver` | 4 | `reasoning/concept_evolver.ts` | 概念演化：合并(≥70% episode 重叠或强边) / 分裂检测 / 衰减(≥7天未使用 -0.05) |
+| `DriftController` | 5 | `policy/drift_controller.ts` | 全局控制：偏好平衡(spread>0.6→均衡) / 约束(0.1-1.0 clamp) / 压缩信号(4种) / 健康评分(复合) |
+| `AgentOrchestrator` | 全 | `agent_orchestrator.ts` | 中央管线：5层全集成，策略感知种子选择，周期健康检查 |
+| `MemoryWriter` | 1-2 | `memory/memory_writer.ts` | 记忆写入 + 概念提取触发 + 链接创建 |
 
-**安全约束**：所有学习更新 ±0.05/clamp、至少 3 次确认才触发策略变更、低置信度记忆（<0.3）隔离、软删除（mark 而非 delete）
+**Vault 记忆结构**：
 
-**API Key 存储**：使用 macOS Keychain（`security add-generic-password` / `security find-generic-password -w`），data.json 只存 `apiKeyInKeychain: true` 标记位。
+```
+agent-memory/              （全部 Markdown，用户可见可搜索可编辑）
+  episodes/                Layer 1 — 情景记忆文件
+    2026-06-30-goal-xxx.md (YAML frontmatter + 正文)
+  concepts/                Layer 2 — 提取的概念
+    memory-system.md        (frontmatter: id/name/slug/related/sourceEpisodes/confidence)
+  reasoning/               Layer 4 — 推理追踪
+    reasoning-xxx.md        (frontmatter: query/keyConcepts/confidence)
+  policy/                  Layer 5 — 全局策略
+    cognitive_policy.json   (conceptPreferences/strategyWeights/explorationRate)
+  profile.md               Layer 1 — 用户画像
+  INDEX.md                 Layer 1 — 全量索引(含概念统计+概念簇)
+```
 
-**知识库构建（buildWiki）**：扫描 vault 所有 .md 笔记 → 逐篇调用 DeepSeek API 生成摘要 → 生成 index.md + overview.md + 用户画像 → 重建向量索引。
+**3 个演化闭环（原始）+ 2 个新闭环**：
 
-**Agent 工具系统**：在 `agent_orchestrator.ts` 中定义（OpenAI function-calling 格式），`executeToolLocal()` 本地分发执行。当前工具：`get_current_time`、`get_todos`、`get_todo_stats`、`add_todos`、`web_search`（DuckDuckGo JSON API + HTML 双层 fallback）。
+| 闭环 | 层 | 功能 |
+|------|-----|------|
+| Memory Evolution | 1 | 衰减（指数+使用阻尼）、强化（5信号类型）、合并（Jaccard >0.85）、软删除 |
+| Router Learning | — | Per-tool 成功率追踪、自适应阈值、策略权重演化（不变） |
+| RAG Optimization | — | 检索反馈、查询聚类、负信号下权重（不变） |
+| **Concept Evolution** | 4 | 概念合并（共享episode≥70%）、分裂检测（冲突关系）、衰减（7天未使用） |
+| **Policy Learning** | 5 | 领域强化（成功推理+0.02）、策略自适应（成功率 >80% → +0.02, <40% → -0.03）、探索率自适应 |
 
-**流式渲染**：`AgentOrchestrator.streamLLM()` 驱动 SSE 解析 → `onStream` 回调 → `requestAnimationFrame` DOM patch（`innerHTML = formatMessage(content)`），50ms 节流。
+**安全约束**：所有学习更新 ±0.05/clamp、至少 3 次确认才触发策略变更、低置信度记忆（<0.3）隔离、软删除（mark 而非 delete）、策略权重范围 [0.1, 1.0]、偏好平衡强制（spread ≤ 0.6）。
 
-**链接交互**：`formatMessage()` 将 `[text](url)` 渲染为 `<span class="llmwiki-link" data-url>`，点击弹出菜单。
+**API Key 存储**：macOS Keychain（`security` 命令），data.json 只存 `apiKeyInKeychain: true` 标记位。
 
-**记忆管线**：每次对话 → `appendChatLog()` 追加到 `chat-log.md` → 维护时 `generateUserProfile()` 消化 → `concepts/用户画像.md` → 清空 chat-log.md。
+**Agent 工具系统**：`executeToolLocal()` switch/case 分发，工具定义在 `AGENT_TOOLS` 数组（OpenAI function-calling 格式）。当前工具：`get_current_time`、`get_todos`、`get_todo_stats`、`add_todos`、`web_search`（DuckDuckGo JSON API + HTML 双层 fallback）。
 
-**Markdown 渲染**：4 阶段：代码块保护 → 块级元素 → 内联元素 → 代码块还原。System prompt 禁止 Markdown 表格。
+**流式渲染**：SSE 解析 → `requestAnimationFrame` DOM patch，50ms 节流。
+
+**Markdown 渲染**：4 阶段 — 代码块保护 → 块级元素 → 内联元素 → 代码块还原。System prompt 禁止 Markdown 表格，规则中包含概念推理优先。
 
 ### Wiki 图谱实现细节
 

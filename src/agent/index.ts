@@ -7,6 +7,13 @@ export { EpisodicMemory, type EpisodicEntry } from "./memory/episodic_memory";
 export { UserProfile, type UserProfileData } from "./memory/user_profile";
 export { ToolMemory, type ToolUsageRecord } from "./memory/tool_memory";
 export { MemoryWriter, type MemoryWriteDecision } from "./memory/memory_writer";
+export { ConceptExtractor, type ExtractedConcept } from "./memory/concept_extractor";
+export { MarkdownMemoryStore, type ConceptData } from "./memory/memory_store";
+export { ConceptGraphBuilder, type ConceptGraph, type ConceptGraphNode, type ConceptGraphEdge, type ConceptSubgraph } from "./reasoning/concept_graph_builder";
+export { ConceptReasoner, type ReasoningResult } from "./reasoning/concept_reasoner";
+export { FeedbackProcessor, type ReasoningTrace, type FeedbackStats } from "./reasoning/feedback_processor";
+export { ConceptEvolver, type MergeCandidate, type SplitCandidate, type DecayResult, type EvolutionResult } from "./reasoning/concept_evolver";
+export { DriftController, type CognitivePolicy, type CompressionSignal, type DriftMetrics, DEFAULT_POLICY } from "./policy/drift_controller";
 export { RouterTelemetry, type RoutingRecord, type ToolMetrics } from "./router_telemetry";
 export { RagFeedback, type RetrievalRecord, type DocumentWeight, type QueryCluster } from "./rag_feedback";
 export {

@@ -12,6 +12,11 @@ import { EpisodicMemory } from "./memory/episodic_memory";
 import { UserProfile, type UserProfileData } from "./memory/user_profile";
 import { ToolMemory } from "./memory/tool_memory";
 import { MemoryWriter } from "./memory/memory_writer";
+import { MarkdownMemoryStore } from "./memory/memory_store";
+import { ConceptGraphBuilder } from "./reasoning/concept_graph_builder";
+import { ConceptReasoner, type ReasoningResult } from "./reasoning/concept_reasoner";
+import { FeedbackProcessor } from "./reasoning/feedback_processor";
+import { ConceptEvolver } from "./reasoning/concept_evolver";
 import { RouterTelemetry } from "./router_telemetry";
 import { RagFeedback } from "./rag_feedback";
 
@@ -131,6 +136,12 @@ export class AgentOrchestrator {
   private userProfile: UserProfile;
   private toolMemory: ToolMemory;
   private memoryWriter: MemoryWriter;
+  private markdownStore: MarkdownMemoryStore;
+  private conceptGraphBuilder: ConceptGraphBuilder;
+  private conceptReasoner: ConceptReasoner;
+  private feedbackProcessor: FeedbackProcessor;
+  private conceptEvolver: ConceptEvolver;
+  private lastReasoningResult: ReasoningResult | null = null;
   private routerTelemetry: RouterTelemetry;
   private ragFeedback: RagFeedback;
   private interactionCount = 0;
@@ -144,7 +155,12 @@ export class AgentOrchestrator {
     this.episodicMemory = new EpisodicMemory(200);
     this.userProfile = new UserProfile();
     this.toolMemory = new ToolMemory();
-    this.memoryWriter = new MemoryWriter(this.episodicMemory, this.userProfile, this.toolMemory);
+    this.markdownStore = new MarkdownMemoryStore(config.vault, `${config.wikiFolder}/agent/memory`);
+    this.memoryWriter = new MemoryWriter(this.episodicMemory, this.userProfile, this.toolMemory, this.markdownStore);
+    this.conceptGraphBuilder = new ConceptGraphBuilder();
+    this.conceptReasoner = new ConceptReasoner();
+    this.feedbackProcessor = new FeedbackProcessor(this.markdownStore);
+    this.conceptEvolver = new ConceptEvolver(this.markdownStore);
     this.routerTelemetry = new RouterTelemetry();
     this.ragFeedback = new RagFeedback();
   }
@@ -156,6 +172,9 @@ export class AgentOrchestrator {
 
     // Load memory from vault
     await this.loadMemoryState();
+
+    // Load cognitive policy
+    await this.feedbackProcessor.loadPolicy().catch(() => { /* use defaults */ });
     // Build vector index from wiki files
     await this.rebuildVectorIndex();
 
@@ -184,10 +203,13 @@ export class AgentOrchestrator {
     const route = routeTool(userText, this.routerTelemetry);
     onActivity?.(`路由决策: ${route.tool} (置信度 ${Math.round(route.confidence * 100)}%)`);
 
-    // 3. Memory Retrieval Layer
+    // 3. Memory Retrieval Layer (including concept reasoning)
     const memoryContext = await this.retrieveMemory(userText, route);
+    if (memoryContext.conceptReasoning) {
+      onActivity?.("概念推理完成");
+    }
 
-    // 4. Build simplified system prompt (no decision logic)
+    // 4. Build enhanced system prompt (with reasoning context)
     const systemPrompt = this.buildSystemPrompt(memoryContext);
 
     // 5. Build messages for LLM
@@ -301,6 +323,31 @@ export class AgentOrchestrator {
       }
     }
 
+    // 10.5 Cognitive Feedback: learn from reasoning
+    if (this.lastReasoningResult) {
+      const onFb = onActivity;
+      if (onFb) onFb("认知反馈处理中...");
+      await this.feedbackProcessor.process(this.lastReasoningResult, userText);
+      this.lastReasoningResult = null;
+    }
+
+    // 10.6 Periodic Health Check: detect compression signals
+    if (this.interactionCount > 0 && this.interactionCount % 15 === 0) {
+      try {
+        const concepts = await this.markdownStore.loadConcepts();
+        const controller = this.feedbackProcessor.controller;
+        const health = controller.computeHealth(
+          concepts,
+          concepts.length,
+          this.memoryStats.toolsTracked.length,
+        );
+        // Log compression signals for diagnostics
+        if (health.compressionSignals.length > 0 && onActivity) {
+          onActivity(`认知健康: ${Math.round(health.overallHealth * 100)}% (${health.compressionSignals.length} 压缩信号)`);
+        }
+      } catch { /* best-effort */ }
+    }
+
     // 11. Evolution Cycle: run periodically
     this.interactionCount++;
     if (this.interactionCount % this.EVOLUTION_CYCLE_INTERVAL === 0) {
@@ -316,8 +363,32 @@ export class AgentOrchestrator {
   // ── Evolution Cycle ───────────────────────────────────────
 
   private async runEvolutionCycle(): Promise<void> {
-    // Memory decay + consolidation
+    // Memory decay + consolidation (Phase 1)
     this.memoryWriter.runMemoryMaintenance();
+
+    // Concept evolution (Phase 4): merge, split, decay
+    // Run every 2nd evolution cycle (every ~20 interactions) to limit overhead
+    if (this.interactionCount % (this.EVOLUTION_CYCLE_INTERVAL * 2) === 0) {
+      try {
+        const usageCounts = this.feedbackProcessor.getUsageStats();
+        const evoResult = await this.conceptEvolver.evolve(
+          usageCounts.size > 0 ? usageCounts : undefined,
+        );
+
+        // Apply low-risk merges only (similarity ≥ 0.85)
+        const highConfidenceMerges = evoResult.merged.filter(m => m.similarity >= 0.85);
+        if (highConfidenceMerges.length > 0) {
+          await this.conceptEvolver.applyMerges(highConfidenceMerges);
+        }
+
+        // Apply split marks (soft annotations only)
+        if (evoResult.splitCandidates.length > 0) {
+          await this.conceptEvolver.applySplitMarks(evoResult.splitCandidates.slice(0, 3));
+        }
+      } catch {
+        // Evolution is best-effort
+      }
+    }
   }
 
   // ── Memory Retrieval Layer ─────────────────────────────────
@@ -330,6 +401,7 @@ export class AgentOrchestrator {
     episodicContext: string;
     profileContext: string;
     toolStats: string;
+    conceptReasoning: string;
   }> {
     // Vector wiki search (always, for context)
     const wikiResults = this.vectorStore.search(query, 3);
@@ -348,7 +420,117 @@ export class AgentOrchestrator {
       ? `Tool "${route.tool}" success rate: ${Math.round(this.toolMemory.getSuccessRate(route.tool) * 100)}%`
       : "";
 
-    return { wikiResults, episodicContext, profileContext, toolStats };
+    // Concept-aware reasoning: build subgraph + reason over it
+    const conceptReasoning = await this.buildConceptReasoning(query);
+
+    return { wikiResults, episodicContext, profileContext, toolStats, conceptReasoning };
+  }
+
+  // ── Concept-Aware Reasoning ───────────────────────────────
+
+  /**
+   * Build a concept reasoning context for the current query.
+   * 1. Load all concepts from markdown store
+   * 2. Build full concept graph
+   * 3. Identify seed concepts matching the query
+   * 4. Build 1-hop subgraph
+   * 5. Run reasoning engine
+   * 6. Format as prompt context block
+   */
+  private async buildConceptReasoning(query: string): Promise<string> {
+    try {
+      // Load concepts from markdown store
+      const concepts = await this.markdownStore.loadConcepts();
+      if (concepts.length < 2) return ""; // need at least 2 concepts for meaningful reasoning
+
+      // Build full concept graph
+      const fullGraph = this.conceptGraphBuilder.buildFull(concepts);
+
+      // Find seed concepts: those whose name/slug/tags match the query
+      // Policy-aware scoring: blend query relevance with cognitive preferences
+      const policy = this.feedbackProcessor.controller.currentPolicy;
+      const queryTerms = query.toLowerCase().split(/\s+/).filter(t => t.length >= 2);
+      const scoredConcepts = concepts.map(c => {
+        let score = 0;
+        const text = `${c.name} ${c.slug} ${c.tags.join(" ")}`.toLowerCase();
+        for (const term of queryTerms) {
+          if (text.includes(term)) score += 1;
+          if (c.name.toLowerCase().includes(term)) score += 2;
+        }
+        // Policy: bias toward preferred concept domains
+        for (const tag of c.tags) {
+          if (tag === "concept") continue;
+          const pref = policy.conceptPreferences[tag] ?? 0.5;
+          score += pref * 0.3;
+        }
+        // Policy: stability preference — favor high-confidence concepts
+        if (c.confidence >= 0.6) {
+          score += policy.conceptStabilityPreference * 0.25;
+        }
+        // Policy: exploration — give novelty bonus to low-episode concepts
+        if (c.sourceEpisodes.length <= 2) {
+          score += policy.explorationRate * 0.2;
+        }
+        return { concept: c, score };
+      }).filter(c => c.score > 0);
+
+      // If no direct matches, take the highest-confidence concepts as seeds
+      let seedSlugs: string[];
+      if (scoredConcepts.length > 0) {
+        scoredConcepts.sort((a, b) => b.score - a.score);
+        seedSlugs = scoredConcepts.slice(0, 5).map(c => c.concept.slug);
+      } else {
+        // Fallback: use most-referenced concepts as seeds
+        const sorted = [...concepts].sort((a, b) => b.sourceEpisodes.length - a.sourceEpisodes.length);
+        seedSlugs = sorted.slice(0, 3).map(c => c.slug);
+      }
+
+      // Build 1-hop subgraph from seed concepts
+      const subgraph = this.conceptGraphBuilder.buildSubgraph(fullGraph, seedSlugs);
+
+      // Run reasoning
+      const reasoning = this.conceptReasoner.reason(query, subgraph, fullGraph);
+
+      // Store for feedback processing later in the pipeline
+      this.lastReasoningResult = reasoning;
+
+      // Format as prompt context
+      return this.formatReasoningContext(reasoning);
+    } catch {
+      // Concept reasoning is best-effort
+      return "";
+    }
+  }
+
+  /**
+   * Format the reasoning result into a prompt-ready context block.
+   */
+  private formatReasoningContext(reasoning: ReasoningResult): string {
+    const sections: string[] = [];
+
+    if (reasoning.keyConcepts.length > 0) {
+      sections.push(`### 相关概念\n${reasoning.keyConcepts.map(c => `- ${c}`).join("\n")}`);
+    }
+
+    if (reasoning.relationships.length > 0) {
+      sections.push(`### 概念关系\n${reasoning.relationships.slice(0, 8).map(r => `- ${r}`).join("\n")}`);
+    }
+
+    if (reasoning.inferredInsights.length > 0) {
+      sections.push(`### 推理洞察\n${reasoning.inferredInsights.slice(0, 5).map(i => `- 💡 ${i}`).join("\n")}`);
+    }
+
+    if (reasoning.bridgingConcepts.length > 0) {
+      sections.push(`### 桥接概念\n${reasoning.bridgingConcepts.map(b => `- 🔗 ${b}（连接不同知识领域）`).join("\n")}`);
+    }
+
+    if (reasoning.contradictions.length > 0) {
+      sections.push(`### 潜在矛盾\n${reasoning.contradictions.slice(0, 3).map(c => `- ⚠ ${c}`).join("\n")}`);
+    }
+
+    if (sections.length === 0) return "";
+
+    return `\n## 概念推理上下文 (置信度: ${Math.round(reasoning.confidence * 100)}%)\n${sections.join("\n")}\n`;
   }
 
   // ── Simplified System Prompt ──────────────────────────────
@@ -358,6 +540,7 @@ export class AgentOrchestrator {
     episodicContext: string;
     profileContext: string;
     toolStats: string;
+    conceptReasoning: string;
   }): string {
     const now = new Date();
     const timeContext = `当前时间: ${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日 ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")} 星期${["日", "一", "二", "三", "四", "五", "六"][now.getDay()]}`;
@@ -383,8 +566,11 @@ export class AgentOrchestrator {
 ${profileSection}
 ${wikiSection}
 ${episodicSection}
+${memory.conceptReasoning}
 
 ## 规则
+- 优先根据概念推理上下文中的洞察和关系来组织回答，而非逐条罗列原始笔记
+- 如果概念推理上下文中有相关概念关系，说明它们之间的关联
 - 基于提供的知识库内容和记忆回答用户问题
 - 如果知识库中有相关信息，注明来源
 - 如果知识库中没有，可以基于常识回答，但要说明
@@ -710,13 +896,29 @@ ${episodicSection}
       return null;
     };
 
-    // Load episodic memory
+    // Load episodic memory (JSON first, markdown fallback)
     const episodicJson = await loadJson(`${base}/episodic.json`);
-    if (episodicJson) this.episodicMemory.deserialize(episodicJson);
+    if (episodicJson) {
+      this.episodicMemory.deserialize(episodicJson);
+    }
+    // Fallback: if JSON yielded nothing, try markdown
+    if (this.episodicMemory.count === 0) {
+      const mdEntries = await this.markdownStore.loadEpisodicEntries();
+      if (mdEntries.length > 0) {
+        this.episodicMemory.deserialize(JSON.stringify(mdEntries));
+      }
+    }
 
-    // Load user profile
+    // Load user profile (JSON first, markdown fallback)
     const profileJson = await loadJson(`${base}/profile.json`);
-    if (profileJson) this.userProfile.deserialize(profileJson);
+    if (profileJson) {
+      this.userProfile.deserialize(profileJson);
+    } else {
+      const mdProfile = await this.markdownStore.loadProfile();
+      if (mdProfile) {
+        this.userProfile.deserialize(JSON.stringify(mdProfile));
+      }
+    }
 
     // Load tool memory
     const toolJson = await loadJson(`${base}/tool_stats.json`);
@@ -770,6 +972,17 @@ ${episodicSection}
     await writeJson("vector_index.json", this.vectorStore.serialize());
     await writeJson("router_telemetry.json", this.routerTelemetry.serialize());
     await writeJson("rag_feedback.json", this.ragFeedback.serialize());
+
+    // Dual-write: mirror to markdown (human-readable memory)
+    try {
+      const allEpisodic = this.episodicMemory.getActiveEntries();
+      // Also include marked-for-removal entries so they're visible in markdown
+      const removed = this.episodicMemory.getCandidatesForRemoval();
+      await this.markdownStore.syncEpisodicEntries([...allEpisodic, ...removed]);
+      await this.markdownStore.saveProfile(this.userProfile.profile as UserProfileData);
+    } catch {
+      // Markdown write is best-effort; JSON is the source of truth
+    }
   }
 
   // ── Public Accessors (for UI/display) ─────────────────────
