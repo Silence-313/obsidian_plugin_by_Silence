@@ -36,8 +36,13 @@ src/                 # 源码目录
   plugin.ts          # HomepagePlugin 类 — 插件入口，注册 view/command/settingTab
   modals.ts          # TodoAddModal + DesktopFolderModal 弹窗类
   settings.ts        # HomepageSettingTab 设置面板
-  view.ts            # HomepageView 类 — 首页视图，包含所有组件渲染和交互逻辑
-  components/        # 组件模块目录（预留，待后续拆分 view.ts）
+  view.ts            # HomepageView 类 — 首页视图核心骨架：生命周期、卡片系统、Header、协调方法
+  components/        # 组件模块目录
+    schedule.ts      # ScheduleComponent — 日程中心：统计栏、日历、待办、昨日复盘
+    timer.ts         # TimerComponent — 计时器：表盘/数字显示、选择器、倒计时通知
+    desktop.ts       # DesktopComponent — 超级桌面：文件网格、导航、多实例管理
+    sidebar.ts       # SidebarComponent — 侧边栏：组件列表、拖拽、搜索过滤
+    todolist.ts      # TodoListComponent — 待办列表：嵌入/独立模式、甘特图、Tab 切换
 manifest.json        # 插件元数据
 esbuild.config.mjs   # esbuild 打包配置（入口 src/main.ts，输出到 vault）
 styles.css           # 日历 hover 样式
@@ -48,10 +53,19 @@ styles.css           # 日历 hover 样式
 | 类 | 文件 | 职责 |
 |----|------|------|
 | `HomepagePlugin` | `plugin.ts` | 插件入口，注册 view/command/settingTab，管理 settings |
-| `HomepageView` | `view.ts` | ItemView，渲染整个首页 UI，包含所有组件和交互逻辑 |
+| `HomepageView` | `view.ts` | ItemView，核心骨架：生命周期、卡片系统（拖拽/缩放/碰撞检测）、Header 时钟、待办 CRUD 协调 |
+| `ScheduleComponent` | `components/schedule.ts` | 日程中心：左侧统计柱状图、日历、右侧待办列表、昨日复盘同步 |
+| `TimerComponent` | `components/timer.ts` | 计时器：表盘/数字双模式、H/M/S 滚动选择器、倒计时、到点通知 |
+| `DesktopComponent` | `components/desktop.ts` | 超级桌面：多实例文件浏览器、网格展示、导航进入/返回、双击打开 |
+| `SidebarComponent` | `components/sidebar.ts` | 侧边栏：组件列表、搜索过滤、点击切换/拖拽添加移除组件 |
+| `TodoListComponent` | `components/todolist.ts` | 待办列表：今天/本周/本月 Tab、纵向甘特图、嵌入/独立双模式 |
 | `HomepageSettingTab` | `settings.ts` | 设置面板 |
 | `TodoAddModal` | `modals.ts` | 添加待办的弹窗（继承 Modal） |
 | `DesktopFolderModal` | `modals.ts` | 超级桌面文件夹路径配置弹窗（继承 Modal） |
+
+### 组件架构
+
+每个组件类构造函数接收 `HomepageView` 引用，通过 `this.view.xxx` 访问插件实例、containerEl、app 及共享方法。`HomepageView` 作为协调层，持有所有组件实例，`addTodo`/`toggleTodo`/`deleteTodo`/`syncTodoToToday`/`syncAllYesterday` 等跨组件操作在 view 层统一调度。
 
 ### 组件系统
 
@@ -86,7 +100,7 @@ styles.css           # 日历 hover 样式
 - `setupCardPosition(container, componentId, wrapperSelector)` 统一的卡片定位方法，恢复布局/居中、处理拖拽、碰撞检测、保存位置
 - `isInteractiveTarget(target)` 检查点击目标是否为交互元素，决定是否触发拖拽。需包含所有可点击元素（`.yesterday-sync-one`、`.yesterday-sync-all` 等），否则卡片拖拽会吞掉点击事件
 - 缩放手柄检测：pointerdown 中判断点击是否在右下角 20px 区域（`e.clientX > rect.right - 20 && e.clientY > rect.bottom - 20`），是则设 `isResizing = true` 跳过拖拽
-- `constrainNoOverlap()` 检测卡片间碰撞，沿最短方向推开（含 12px 间隙）
+- `constrainNoOverlap()` 检测卡片间碰撞，沿最短方向推开（含 12px 间隙）。外层循环迭代直到位置稳定（最多 10 次），避免解决 A 与 B 重叠后被推回 A 的连锁问题
 - `expandContentHeight()` 根据最低卡片的底部位置动态设 `minHeight`，确保内容区可滚动到所有卡片
 - `observeCardResizes()` 用 ResizeObserver 监听卡片尺寸变化，仅保存宽高，不操作 DOM 位置（避免与浏览器原生 resize 冲突）
 - `renderTimerPicker(field, label, max, cur)` 生成 H/M/S 滚动选择器 HTML，消除三份重复模板
@@ -98,6 +112,8 @@ styles.css           # 日历 hover 样式
 - 待办列表甘特图：`renderGanttView()` 以 `HOUR_H=40` + `STRIP_W=5` 细线 + 右侧文字展示，`parseMinutes()` 解析时间字符串，`getWeekRange()` / `getMonthRange()` 计算周/月范围
 - 待办列表联动：`refreshTodoListView()` 根据两者是否同时启用自动分发 → `renderTodoListEmbedded()`（嵌入日程右侧面板，渲染完整 Tab+内容到 `#homepage-todo`）或 `renderTodoListStandalone()`（独立卡片，渲染到 `#homepage-todolist-content`），共享渲染逻辑在 `renderTodoListContent()`
 - 所有卡片 wrapper 必须在 `#homepage-content` 内部（`position: relative`），否则不跟随滚动且碰撞检测感知不到
+- `getOtherCardBounds()` 用 `[data-component-wrapper]` 属性选择器选中所有卡片，排除自身并跳过 `!el.style.left` 的未定位卡片。`data-component-wrapper="true"` 在 render() 中统一添加到各 wrapper div
+- pointermove 拖拽时，`constrainNoOverlap` 可能把卡片推出边界（如 y=−252），`Math.max(0, y)` 裁切后可能仍重叠。因此 pointermove 做了 constrain+clamp 循环（最多 5 次），直到位置稳定
 
 ## 部署到 Obsidian
 
@@ -111,3 +127,4 @@ vault 中安装了 `hot-reload` 插件，需要在 homepage 插件目录有 `.ho
 
 1. **修改默认文本不生效：** ✅ 已解决 — v2 改为 `ItemView`。
 2. **render() 重复绑事件**：每次 render 重建 DOM 后重新绑定事件，目前各 render 方法内部用 querySelector + addEventListener 处理，无重复绑定问题（innerHTML 替换会销毁旧 DOM）。
+3. **超级桌面多实例相互覆盖：** ✅ 已解决 — 根因是 `[id$="-wrapper"]` 选择器匹配不到 `homepage-desktop-wrapper-0`（ID 末尾是 `-0` 而非 `-wrapper`），导致碰撞检测找不到其他桌面实例。修复：选择器改为 `[data-component-wrapper]` 属性选择；`constrainNoOverlap` 改为迭代到稳定；pointermove 做了 constrain+clamp 循环防止边界裁切破坏推离结果；`getOtherCardBounds` 跳过未定位卡片（`!el.style.left`）。
