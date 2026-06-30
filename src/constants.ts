@@ -1,13 +1,22 @@
-import type { ComponentInfo, HomepageSettings } from "./types";
+import type { ComponentInfo, HomepageSettings, StudySettings } from "./types";
 
 export const VIEW_TYPE_HOMEPAGE = "homepage-view";
+export const VIEW_TYPE_STUDY = "study-mode-view";
 
 export const DEFAULT_COMPONENTS: ComponentInfo[] = [
   { id: "schedule", name: "日程中心", added: true },
   { id: "timer", name: "计时器", added: false },
   { id: "desktop", name: "超级桌面", added: false },
   { id: "todolist", name: "待办列表", added: false },
+  { id: "study", name: "学习模式", added: false },
 ];
+
+export const DEFAULT_STUDY_SETTINGS: StudySettings = {
+  defaultUrl: "",
+  screenshotFormat: "png",
+  screenshotQuality: 90,
+  history: [],
+};
 
 export const DEFAULT_SETTINGS: HomepageSettings = {
   userName: "",
@@ -16,6 +25,7 @@ export const DEFAULT_SETTINGS: HomepageSettings = {
   cardLayouts: {},
   desktopFolders: [""],
   desktopNames: [""],
+  studyMode: DEFAULT_STUDY_SETTINGS,
 };
 
 export const TODO_COLORS = [

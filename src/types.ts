@@ -21,6 +21,13 @@ export interface CardLayout {
   height: number;
 }
 
+export interface StudySettings {
+  defaultUrl: string;
+  screenshotFormat: "png" | "jpg";
+  screenshotQuality: number;
+  history: string[];
+}
+
 export interface HomepageSettings {
   userName: string;
   todos: TodoItem[];
@@ -28,4 +35,5 @@ export interface HomepageSettings {
   cardLayouts: Record<string, CardLayout>;
   desktopFolders: string[];
   desktopNames: string[];
+  studyMode: StudySettings;
 }

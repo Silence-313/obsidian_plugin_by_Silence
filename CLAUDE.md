@@ -30,13 +30,15 @@ npm run lint       # TypeScript 类型检查
 ```
 src/                 # 源码目录
   main.ts            # 入口文件，单行 re-export plugin.ts
-  types.ts           # 所有 interface/type（TodoItem, ComponentInfo, CardLayout, HomepageSettings）
-  constants.ts       # 常量（VIEW_TYPE_HOMEPAGE, DEFAULT_COMPONENTS, DEFAULT_SETTINGS, TODO_COLORS）
+  types.ts           # 所有 interface/type（TodoItem, ComponentInfo, CardLayout, HomepageSettings, StudySettings）
+  constants.ts       # 常量（VIEW_TYPE_HOMEPAGE, VIEW_TYPE_STUDY, DEFAULT_COMPONENTS, DEFAULT_SETTINGS, TODO_COLORS）
   utils.ts           # 纯工具函数（formatDateKey, getTimePeriod, escapeHtml, formatTime, formatDate）
   plugin.ts          # HomepagePlugin 类 — 插件入口，注册 view/command/settingTab
   modals.ts          # TodoAddModal + DesktopFolderModal 弹窗类
   settings.ts        # HomepageSettingTab 设置面板
   view.ts            # HomepageView 类 — 首页视图核心骨架：生命周期、卡片系统、Header、协调方法
+  study-view.ts      # StudyView 类 — 学习模式 ItemView：iframe 浏览器、视频平台识别、拖拽选取框
+  study-controller.ts # StudyController 类 — 学习模式编排：split 管理、截图（4 层策略）、编辑器插入
   components/        # 组件模块目录
     schedule.ts      # ScheduleComponent — 日程中心：统计栏、日历、待办、昨日复盘
     timer.ts         # TimerComponent — 计时器：表盘/数字显示、选择器、倒计时通知
@@ -62,6 +64,8 @@ styles.css           # 日历 hover 样式
 | `HomepageSettingTab` | `settings.ts` | 设置面板 |
 | `TodoAddModal` | `modals.ts` | 添加待办的弹窗（继承 Modal） |
 | `DesktopFolderModal` | `modals.ts` | 超级桌面文件夹路径配置弹窗（继承 Modal） |
+| `StudyView` | `study-view.ts` | 学习模式 ItemView：iframe 浏览器、视频平台 embed 转换、拖拽选取框 |
+| `StudyController` | `study-controller.ts` | 学习模式编排：split 布局、4 层截图策略、编辑器插入 |
 
 ### 组件架构
 
@@ -81,6 +85,7 @@ styles.css           # 日历 hover 样式
 - **计时器** (`id: "timer"`)：表盘/数字双模式倒计时，滚动选择器设定时间，到点弹窗提醒，默认未添加
 - **超级桌面** (`id: "desktop"`)：多实例文件浏览器，每个实例可绑定 vault 下不同文件夹，网格展示文件/文件夹（emoji 图标），双击 md 文件在 Obsidian 新标签页打开，其余类型用系统默认应用打开。支持 `📁+`/`📝+` 内联创建文件夹/Markdown 文件（输入框直接出现在图标下方，回车确认、Esc 取消）、右键菜单删除文件/文件夹（移至回收站）、`+` 新增实例、`×` 删除实例（≥2 个时显示）、标题可内联编辑，默认未添加。实例通过 `desktopFolders[i]` / `desktopNames[i]` 存储，卡片布局键为 `desktop-{i}`
 - **待办列表** (`id: "todolist"`)：时间范围待办视图，Tab 切换今天/本周/本月。今天模式支持纵向甘特图（细线+右侧文字），按开始/结束时间展示时间段。待办项复用 `todos` 数组与日程中心双向同步。与日程中心同时启用时，待办列表卡片隐藏，内容嵌入日程中心右侧面板替代原始待办区域。默认未添加
+- **学习模式** (`id: "study"`)：打开 Markdown 文件时自动在左侧创建 split，iframe 内嵌浏览器。输入网址或关键词即可搜索浏览，YouTube/Bilibili/Vimeo 等视频平台自动转为嵌入式播放器（embed URL），支持一边看视频一边记笔记。工具栏有前进/后退/刷新/截图/历史记录。截图点击后显示可拖拽选取框（Enter 截取/Esc 取消），4 层截图策略：Canvas → macOS `screencapture` → `getUserMedia` → 视频缩略图。默认未添加
 
 ### 卡片系统
 
@@ -115,6 +120,38 @@ styles.css           # 日历 hover 样式
 - `getOtherCardBounds()` 用 `[data-component-wrapper]` 属性选择器选中所有卡片，排除自身并跳过 `!el.style.left` 的未定位卡片。`data-component-wrapper="true"` 在 render() 中统一添加到各 wrapper div
 - pointermove 拖拽时，`constrainNoOverlap` 可能把卡片推出边界（如 y=−252），`Math.max(0, y)` 裁切后可能仍重叠。因此 pointermove 做了 constrain+clamp 循环（最多 5 次），直到位置稳定
 
+### 学习模式实现细节
+
+- 打开 md 文件时 `active-leaf-change` 事件自动打开学习模式 split（`createLeafBySplit(activeLeaf, "vertical", true)`），关闭所有 md 文件后 200ms debounce 自动关闭
+- 学习模式 split 设置在编辑器左侧，`setActiveLeaf(activeLeaf, { focus: true })` 保持编辑器焦点
+- `<webview>` 不可用（Obsidian 未启用 `webviewTag`），改用 `<iframe>` + `sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-presentation"`
+- `convertToEmbedUrl(url)` 检测 YouTube/Bilibili/Vimeo 并转为 embed 播放器 URL，保留时间戳/分P参数
+- 搜索：非 URL 格式输入 → `https://www.google.com/search?q=...`
+- 历史记录持久化在 `settings.studyMode.history[]`，最多 50 条，点击历史项恢复导航
+- 起始页：搜索栏 + 6 个快捷链接（Google/YouTube/Bilibili/Vimeo/GitHub/Wikipedia）
+
+### 截图 4 层策略
+
+| 优先级 | 策略 | 前置条件 | 适用场景 |
+|--------|------|---------|---------|
+| 1 | Canvas `drawImage` | 同源页面 | 同源 iframe，瞬时 |
+| 2 | macOS `screencapture` 命令 | `require("child_process")` 可用 | 跨显示器精确截图 |
+| 3 | 旧版 `getUserMedia` | Chrome/Electron 旧版 API | 单显示器 fallback |
+| 4 | 视频平台缩略图 API | 平台 API 可访问 | 最后手段 |
+
+- 截图前先获取所有 md leaves（`getLeavesOfType("markdown")`），不依赖活跃焦点
+- 拖拽选取框：半透明遮罩 + 虚线选取框 + 4 角拖拽手柄，Enter 截取 / Esc 取消
+- 截取时先隐藏遮罩，等 `setTimeout(100ms) + requestAnimationFrame` 确保 DOM 重绘后再执行
+- 选取框坐标相对 iframe wrapper → 需加 `wrapper.getBoundingClientRect()` 偏移转视口坐标
+
+### Obsidian Electron API 可用性
+
+- `require("electron")` **不可用**（抛出异常）→ `desktopCapturer` 无法使用
+- `navigator.mediaDevices.getDisplayMedia()` **抛出 NotSupportedError**（Obsidian 未配置）
+- 旧版 `(navigator.mediaDevices as any).getUserMedia({ video: { mandatory: { chromeMediaSource: "desktop" } } })` **可用**但仅捕获**主显示器**
+- `require("child_process")` / `require("fs")` **可用** → 可调用 macOS `screencapture` 命令
+- 多显示器：`chromeMediaSource: "desktop"` 只捕获主屏，外接显示器需用 `screencapture`（基于全局桌面坐标）
+
 ## 部署到 Obsidian
 
 编译产物直接输出到 vault 插件目录（`/Users/xuejingchen/Obsidian/Silence/.obsidian/plugins/homepage/main.js`），`manifest.json` 和 `styles.css` 通过 symlink 指向开发目录。
@@ -128,3 +165,6 @@ vault 中安装了 `hot-reload` 插件，需要在 homepage 插件目录有 `.ho
 1. **修改默认文本不生效：** ✅ 已解决 — v2 改为 `ItemView`。
 2. **render() 重复绑事件**：每次 render 重建 DOM 后重新绑定事件，目前各 render 方法内部用 querySelector + addEventListener 处理，无重复绑定问题（innerHTML 替换会销毁旧 DOM）。
 3. **超级桌面多实例相互覆盖：** ✅ 已解决 — 根因是 `[id$="-wrapper"]` 选择器匹配不到 `homepage-desktop-wrapper-0`（ID 末尾是 `-0` 而非 `-wrapper`），导致碰撞检测找不到其他桌面实例。修复：选择器改为 `[data-component-wrapper]` 属性选择；`constrainNoOverlap` 改为迭代到稳定；pointermove 做了 constrain+clamp 循环防止边界裁切破坏推离结果；`getOtherCardBounds` 跳过未定位卡片（`!el.style.left`）。
+4. **学习模式 `<webview>` 无法跳转：** ✅ 已解决 — 根因是 Obsidian 未启用 Electron `webviewTag`，`<webview>` 标签退化为普通 DOM 元素。修复：改用 `<iframe>` + 视频平台 embed URL 自动转换（YouTube/Bilibili/Vimeo）。
+5. **学习模式跨域截图失败：** ✅ 已解决 — Canvas `drawImage` 无法读取跨源 iframe 内容。修复：4 层截图策略，优先使用 macOS `screencapture` 命令（全局桌面坐标，跨显示器精确）。
+6. **截图多显示器坐标偏移：** ✅ 已解决 — 旧版 `getUserMedia` 只捕获主显示器，与外接显示器坐标不匹配。修复：`screencapture` 使用 `window.screenX/Y` 全局坐标，不受显示器边界影响；选框坐标加 `wrapper.getBoundingClientRect()` 偏移转视口坐标。同时优化 `captureFromStream` 的 `isFullDesktop` 检测逻辑。

@@ -31,5 +31,49 @@ export class HomepageSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("超级桌面")
       .setDesc("各桌面实例的文件夹在组件内通过设置按钮独立配置");
+
+    // --- Study Mode Section ---
+    containerEl.createEl("h3", { text: "学习模式" });
+
+    new Setting(containerEl)
+      .setName("默认网址")
+      .setDesc("打开学习模式时默认加载的网页地址（留空则显示起始页）")
+      .addText((text) =>
+        text
+          .setPlaceholder("https://www.youtube.com")
+          .setValue(this.plugin.settings.studyMode.defaultUrl)
+          .onChange(async (value) => {
+            this.plugin.settings.studyMode.defaultUrl = value.trim();
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("截图格式")
+      .setDesc("截图的图片格式")
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption("png", "PNG")
+          .addOption("jpg", "JPEG")
+          .setValue(this.plugin.settings.studyMode.screenshotFormat)
+          .onChange(async (value) => {
+            this.plugin.settings.studyMode.screenshotFormat = value as "png" | "jpg";
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("截图质量")
+      .setDesc("仅对 JPEG 格式有效 (1-100)")
+      .addSlider((slider) =>
+        slider
+          .setLimits(1, 100, 1)
+          .setValue(this.plugin.settings.studyMode.screenshotQuality)
+          .setDynamicTooltip()
+          .onChange(async (value) => {
+            this.plugin.settings.studyMode.screenshotQuality = value;
+            await this.plugin.saveSettings();
+          })
+      );
   }
 }

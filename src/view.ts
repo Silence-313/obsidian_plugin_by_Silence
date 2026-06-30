@@ -1,7 +1,7 @@
 import { ItemView, WorkspaceLeaf } from "obsidian";
 import type HomepagePlugin from "./plugin";
 import type { TodoItem, CardLayout } from "./types";
-import { VIEW_TYPE_HOMEPAGE } from "./constants";
+import { VIEW_TYPE_HOMEPAGE, VIEW_TYPE_STUDY } from "./constants";
 import { getTimePeriod, escapeHtml, formatTime, formatDate, formatDateKey } from "./utils";
 import { ScheduleComponent } from "./components/schedule";
 import { TimerComponent } from "./components/timer";
@@ -521,6 +521,10 @@ export default class HomepageView extends ItemView {
     if (this.isComponentAdded("todolist") && !this.isComponentAdded("schedule")) {
       this.todolist.renderStandalone();
       this.setupCardPosition(container, "todolist", "#homepage-todolist-wrapper");
+    }
+
+    if (!this.isComponentAdded("study")) {
+      this.app.workspace.detachLeavesOfType(VIEW_TYPE_STUDY);
     }
 
     this.observeCardResizes();
