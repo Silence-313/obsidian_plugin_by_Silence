@@ -1,37 +1,35 @@
-import { ItemView, WorkspaceLeaf, FileSystemAdapter } from "obsidian";
+import { ItemView, WorkspaceLeaf } from "obsidian";
 import type HomepagePlugin from "./plugin";
 import type { TodoItem, CardLayout } from "./types";
-import { VIEW_TYPE_HOMEPAGE, TODO_COLORS } from "./constants";
-import { formatDateKey, getTimePeriod, escapeHtml, formatTime, formatDate } from "./utils";
-import { TodoAddModal, DesktopFolderModal } from "./modals";
+import { VIEW_TYPE_HOMEPAGE } from "./constants";
+import { getTimePeriod, escapeHtml, formatTime, formatDate, formatDateKey } from "./utils";
+import { ScheduleComponent } from "./components/schedule";
+import { TimerComponent } from "./components/timer";
+import { DesktopComponent } from "./components/desktop";
+import { SidebarComponent } from "./components/sidebar";
+import { TodoListComponent } from "./components/todolist";
 
 
-export class HomepageView extends ItemView {
+export default class HomepageView extends ItemView {
   plugin: HomepagePlugin;
   private intervalId: number | null = null;
-  private calendarYear: number;
-  private calendarMonth: number;
-  private selectedDate: string;
-  private timerHours = 0;
-  private timerMinutes = 5;
-  private timerSeconds = 0;
-  private timerRemaining = 0;
-  private timerRunning = false;
-  private timerFinished = false;
-  private timerDisplayMode: "clock" | "digital" = "clock";
-  private timerIntervalId: number | null = null;
   private cardResizeObserver: ResizeObserver | null = null;
   private resizeSaveTimers = new Map<string, number>();
-  private desktopCurrentPaths: string[] = [];
-  private todoListMode: "today" | "week" | "month" = "today";
+
+  schedule: ScheduleComponent;
+  timer: TimerComponent;
+  desktop: DesktopComponent;
+  sidebar: SidebarComponent;
+  todolist: TodoListComponent;
 
   constructor(leaf: WorkspaceLeaf, plugin: HomepagePlugin) {
     super(leaf);
     this.plugin = plugin;
-    const now = new Date();
-    this.calendarYear = now.getFullYear();
-    this.calendarMonth = now.getMonth();
-    this.selectedDate = formatDateKey(now.getFullYear(), now.getMonth(), now.getDate());
+    this.schedule = new ScheduleComponent(this);
+    this.timer = new TimerComponent(this);
+    this.desktop = new DesktopComponent(this);
+    this.sidebar = new SidebarComponent(this);
+    this.todolist = new TodoListComponent(this);
   }
 
   getViewType(): string {
@@ -56,17 +54,14 @@ export class HomepageView extends ItemView {
       window.clearInterval(this.intervalId);
       this.intervalId = null;
     }
-    if (this.timerIntervalId !== null) {
-      window.clearInterval(this.timerIntervalId);
-      this.timerIntervalId = null;
-    }
+    this.timer.cleanup();
     if (this.cardResizeObserver) {
       this.cardResizeObserver.disconnect();
       this.cardResizeObserver = null;
     }
   }
 
-  private getCardLayout(id: string): CardLayout {
+  getCardLayout(id: string): CardLayout {
     return this.plugin.settings.cardLayouts[id] || { x: -1, y: -1, width: 0, height: 0 };
   }
 
@@ -75,11 +70,11 @@ export class HomepageView extends ItemView {
     this.plugin.saveSettings().catch(console.error);
   }
 
-  private isComponentAdded(id: string): boolean {
+  isComponentAdded(id: string): boolean {
     return this.plugin.settings.components.some(c => c.id === id && c.added);
   }
 
-  private render() {
+  render() {
     const container = this.contentEl as HTMLElement;
     container.empty();
 
@@ -239,7 +234,7 @@ export class HomepageView extends ItemView {
                 font-size: 11px;
                 padding: 2px 6px;
                 font-family: inherit;
-              ">${this.timerDisplayMode === "clock" ? "数字" : "表盘"}</button>
+              ">${this.timer.timerDisplayMode === "clock" ? "数字" : "表盘"}</button>
             </div>
             <div id="timer-display" style="
               flex: 1;
@@ -249,9 +244,9 @@ export class HomepageView extends ItemView {
               min-height: 0;
             "></div>
             <div style="display: flex; align-items: center; justify-content: center; gap: 6px;">
-              ${this.renderTimerPicker("h", "时", 100, this.timerHours)}
-              ${this.renderTimerPicker("m", "分", 60, this.timerMinutes)}
-              ${this.renderTimerPicker("s", "秒", 60, this.timerSeconds)}
+              ${this.timer.renderPicker("h", "时", 100, this.timer.timerHours)}
+              ${this.timer.renderPicker("m", "分", 60, this.timer.timerMinutes)}
+              ${this.timer.renderPicker("s", "秒", 60, this.timer.timerSeconds)}
             </div>
             <div style="display: flex; justify-content: center; gap: 8px;">
               <button id="timer-start-btn" style="
@@ -431,8 +426,8 @@ export class HomepageView extends ItemView {
                     font-size: 11px;
                     border-radius: 4px;
                     border: 1px solid var(--background-modifier-border);
-                    background: ${this.todoListMode === m ? "var(--interactive-accent)" : "transparent"};
-                    color: ${this.todoListMode === m ? "var(--text-on-accent)" : "var(--text-muted)"};
+                    background: ${this.todolist.mode === m ? "var(--interactive-accent)" : "transparent"};
+                    color: ${this.todolist.mode === m ? "var(--text-on-accent)" : "var(--text-muted)"};
                     cursor: pointer;
                     font-family: inherit;
                   ">${labels[m]}</button>`;
@@ -475,34 +470,34 @@ export class HomepageView extends ItemView {
       "></div>
     `;
 
-    this.renderSidebar();
+    this.sidebar.render();
 
     if (this.isComponentAdded("schedule")) {
-      this.renderStats();
-      this.renderCalendar();
+      this.schedule.renderStats();
+      this.schedule.renderCalendar();
       if (this.isComponentAdded("todolist")) {
-        this.renderTodoListEmbedded();
+        this.todolist.renderEmbedded();
       } else {
-        this.renderTodo();
+        this.schedule.renderTodo();
       }
       this.setupCardPosition(container, "schedule", "#homepage-card-wrapper");
     }
 
     if (this.isComponentAdded("timer")) {
-      this.initTimerDisplay();
+      this.timer.init();
       this.setupCardPosition(container, "timer", "#homepage-timer-wrapper");
     }
 
     if (this.isComponentAdded("desktop")) {
-      this.desktopCurrentPaths = this.plugin.settings.desktopFolders.map(f => f);
+      this.desktop.currentPaths = this.plugin.settings.desktopFolders.map(f => f);
       for (let i = 0; i < this.plugin.settings.desktopFolders.length; i++) {
-        this.initDesktopDisplay(i);
+        this.desktop.init(i);
         this.setupCardPosition(container, `desktop-${i}`, `#homepage-desktop-wrapper-${i}`);
       }
     }
 
     if (this.isComponentAdded("todolist") && !this.isComponentAdded("schedule")) {
-      this.renderTodoListStandalone();
+      this.todolist.renderStandalone();
       this.setupCardPosition(container, "todolist", "#homepage-todolist-wrapper");
     }
 
@@ -518,13 +513,14 @@ export class HomepageView extends ItemView {
         }
       });
 
-      // auto-resize input width to fit content
       input.addEventListener("input", () => this.autoResizeInput(input, 4));
       this.autoResizeInput(input, 4);
     }
   }
 
-  private isInteractiveTarget(target: HTMLElement): boolean {
+  // ── Shared card system ──────────────────────────────────
+
+  isInteractiveTarget(target: HTMLElement): boolean {
     if (target.closest("button, input, select, textarea")) return true;
     if (target.closest(".calendar-day, .todo-check, .todo-delete, .todo-filter-chip, .yesterday-sync-one, .yesterday-sync-all")) return true;
     if (target.closest(".timer-picker-wrap")) return true;
@@ -533,7 +529,7 @@ export class HomepageView extends ItemView {
     return false;
   }
 
-  private autoResizeInput(input: HTMLInputElement, extraPx: number = 6): void {
+  autoResizeInput(input: HTMLInputElement, extraPx: number = 6): void {
     const span = document.createElement("span");
     const cs = getComputedStyle(input);
     span.style.cssText = `
@@ -547,7 +543,7 @@ export class HomepageView extends ItemView {
     document.body.removeChild(span);
   }
 
-  private setupHoverDeleteButton(itemSelector: string, deleteSelector: string): void {
+  setupHoverDeleteButton(itemSelector: string, deleteSelector: string): void {
     this.containerEl.querySelectorAll(itemSelector).forEach(el => {
       el.addEventListener("mouseenter", () => {
         const del = el.querySelector(deleteSelector) as HTMLElement;
@@ -582,7 +578,6 @@ export class HomepageView extends ItemView {
     wrapper.style.left = posX + "px";
     wrapper.style.top = posY + "px";
 
-    // resolve overlaps for new cards (no saved layout) against existing cards
     if (layout.x < 0) {
       const maxX = contentArea.offsetWidth - w;
       const others = this.getOtherCardBounds(wrapperSelector);
@@ -604,11 +599,10 @@ export class HomepageView extends ItemView {
 
     wrapper.addEventListener("pointerdown", (e) => {
       isResizing = false;
-      // detect click on the native resize handle (bottom-right ~20px corner)
       const rect = wrapper.getBoundingClientRect();
       if (e.clientX > rect.right - 20 && e.clientY > rect.bottom - 20) {
         isResizing = true;
-        return; // let browser handle resize natively, skip drag
+        return;
       }
       if (this.isInteractiveTarget(e.target as HTMLElement)) return;
       wrapper.setPointerCapture((e as PointerEvent).pointerId);
@@ -623,7 +617,6 @@ export class HomepageView extends ItemView {
       const nx = Math.max(0, Math.min(origLeft + e.clientX - startX, maxX));
       const ny = Math.max(0, origTop + e.clientY - startY);
       const others = this.getOtherCardBounds(wrapperSelector);
-      // loop constrain + clamp — clamping may push back into overlap
       let cx = nx, cy = ny;
       for (let iter = 0; iter < 5; iter++) {
         const c = this.constrainNoOverlap(cx, cy, wrapper.offsetWidth, wrapper.offsetHeight, others);
@@ -641,7 +634,6 @@ export class HomepageView extends ItemView {
     wrapper.addEventListener("pointerup", () => {
       wrapper.style.cursor = "";
       if (isResizing) {
-        // restore position — browser may have shifted it during native resize
         const pre = this.plugin.settings.cardLayouts[componentId];
         if (pre) {
           wrapper.style.left = pre.x + "px";
@@ -698,7 +690,7 @@ export class HomepageView extends ItemView {
       const el = w as HTMLElement;
       if (el.matches(excludeSelector)) return;
       if (el.style.display === "none") return;
-      if (!el.style.left) return; // skip cards not yet positioned by setupCardPosition
+      if (!el.style.left) return;
       result.push({
         x: el.offsetLeft,
         y: el.offsetTop,
@@ -715,15 +707,12 @@ export class HomepageView extends ItemView {
   ): { x: number; y: number } {
     const GAP = 12;
     let rx = x, ry = y;
-    // iterate until stable to handle cascading overlaps (resolving with card B
-    // may push back into card A which was already processed)
     for (let iter = 0; iter < 10; iter++) {
       let moved = false;
       for (const o of others) {
         const ox = rx < o.x + o.w + GAP && rx + w + GAP > o.x;
         const oy = ry < o.y + o.h + GAP && ry + h + GAP > o.y;
         if (!ox || !oy) continue;
-        // push to nearest edge with gap
         const pushRight = (o.x + o.w + GAP) - rx;
         const pushLeft = (rx + w + GAP) - o.x;
         const pushDown = (o.y + o.h + GAP) - ry;
@@ -740,890 +729,7 @@ export class HomepageView extends ItemView {
     return { x: rx, y: ry };
   }
 
-  private timerOutsideClickHandler: ((e: Event) => void) | null = null;
-
-  private initTimerDisplay() {
-    // bind events once — only called from render() after DOM creation
-    this.updateTimerDisplay();
-
-    // time pickers: click label to toggle scroll, click item to select
-    this.containerEl.querySelectorAll(".timer-picker-wrap").forEach(wrap => {
-      const el = wrap as HTMLElement;
-      const field = el.dataset.field!;
-      const label = el.querySelector(".timer-picker-label") as HTMLElement;
-      const scroll = el.querySelector(".timer-picker-scroll") as HTMLElement;
-
-      const getVal = () => field === "h" ? this.timerHours : field === "m" ? this.timerMinutes : this.timerSeconds;
-      const max = field === "h" ? 99 : 59;
-
-      const isOpen = () => scroll.style.display !== "none";
-
-      const apply = (val: number) => {
-        const v = Math.max(0, Math.min(val, max));
-        if (field === "h") this.timerHours = v;
-        else if (field === "m") this.timerMinutes = v;
-        else this.timerSeconds = v;
-        this.timerRemaining = this.timerHours * 3600 + this.timerMinutes * 60 + this.timerSeconds;
-        label.textContent = String(v).padStart(2, "0");
-        this.updateTimerDisplay();
-      };
-
-      const closeAll = () => {
-        this.containerEl.querySelectorAll(".timer-picker-scroll").forEach(s => {
-          (s as HTMLElement).style.display = "none";
-        });
-        this.containerEl.querySelectorAll(".timer-picker-label").forEach(l => {
-          (l as HTMLElement).style.display = "flex";
-        });
-      };
-
-      const open = () => {
-        closeAll();
-        label.style.display = "none";
-        scroll.style.display = "block";
-        requestAnimationFrame(() => {
-          scroll.scrollTop = getVal() * 28;
-          this.updateScrollHighlight(scroll);
-        });
-      };
-
-      label.addEventListener("click", (e) => {
-        e.stopPropagation();
-        if (isOpen()) { closeAll(); } else { open(); }
-      });
-
-      scroll.querySelectorAll("div").forEach(item => {
-        item.addEventListener("click", (e) => {
-          e.stopPropagation();
-          apply(parseInt((item as HTMLElement).dataset.value!));
-          closeAll();
-        });
-      });
-    });
-
-    // remove previous outside-click handler before adding new one
-    if (this.timerOutsideClickHandler) {
-      this.containerEl.removeEventListener("click", this.timerOutsideClickHandler);
-    }
-    this.timerOutsideClickHandler = (e: Event) => {
-      const target = e.target as HTMLElement;
-      if (!target.closest(".timer-picker-wrap")) {
-        this.containerEl.querySelectorAll(".timer-picker-scroll").forEach(s => {
-          (s as HTMLElement).style.display = "none";
-        });
-        this.containerEl.querySelectorAll(".timer-picker-label").forEach(l => {
-          (l as HTMLElement).style.display = "flex";
-        });
-      }
-    };
-    this.containerEl.addEventListener("click", this.timerOutsideClickHandler);
-
-    // mode toggle
-    const modeToggle = this.containerEl.querySelector("#timer-mode-toggle");
-    modeToggle?.addEventListener("click", () => {
-      this.timerDisplayMode = this.timerDisplayMode === "clock" ? "digital" : "clock";
-      modeToggle.textContent = this.timerDisplayMode === "clock" ? "数字" : "表盘";
-      this.updateTimerDisplay();
-    });
-
-    // start / pause
-    const startBtn = this.containerEl.querySelector("#timer-start-btn");
-    startBtn?.addEventListener("click", () => {
-      if (this.timerFinished) this.timerFinished = false;
-      if (this.timerRunning) {
-        this.pauseTimer();
-      } else {
-        this.startTimer();
-      }
-    });
-
-    // reset
-    this.containerEl.querySelector("#timer-reset-btn")?.addEventListener("click", () => {
-      this.timerRunning = false;
-      if (this.timerIntervalId !== null) {
-        window.clearInterval(this.timerIntervalId);
-        this.timerIntervalId = null;
-      }
-      this.timerFinished = false;
-      this.timerRemaining = this.timerHours * 3600 + this.timerMinutes * 60 + this.timerSeconds;
-      this.updateTimerDisplay();
-      const startBtn = this.containerEl.querySelector("#timer-start-btn") as HTMLButtonElement;
-      if (startBtn) startBtn.textContent = "开始";
-      const resetBtn = this.containerEl.querySelector("#timer-reset-btn") as HTMLElement;
-      if (resetBtn) resetBtn.style.display = "none";
-      this.setPickersEditable(true);
-    });
-  }
-
-  private updateScrollHighlight(picker: HTMLElement) {
-    const idx = Math.round(picker.scrollTop / 28);
-    picker.querySelectorAll("div").forEach((d, i) => {
-      (d as HTMLElement).style.color = i === idx ? "var(--text-normal)" : "var(--text-muted)";
-      (d as HTMLElement).style.fontWeight = i === idx ? "600" : "400";
-    });
-  }
-
-  private getCurrentDisplayTime(): number {
-    const total = this.timerHours * 3600 + this.timerMinutes * 60 + this.timerSeconds;
-    // paused mid-countdown → show frozen remaining time
-    if (!this.timerRunning && this.timerRemaining > 0 && this.timerRemaining < total) {
-      return this.timerRemaining;
-    }
-    // running → show live remaining time
-    if (this.timerRunning) {
-      return this.timerRemaining;
-    }
-    // idle or finished → show selected time
-    return total;
-  }
-
-  private updateTimerDisplay() {
-    const display = this.containerEl.querySelector("#timer-display") as HTMLElement;
-    if (!display) return;
-
-    const t = this.getCurrentDisplayTime();
-    const maxTotal = this.timerHours * 3600 + this.timerMinutes * 60 + this.timerSeconds;
-    if (this.timerDisplayMode === "clock") {
-      display.innerHTML = this.renderClockFace(t, maxTotal);
-    } else {
-      display.innerHTML = this.renderDigitalDisplay(t, maxTotal);
-    }
-  }
-
-  private renderClockFace(total: number, maxTotal: number): string {
-    const h = Math.floor(total / 3600);
-    const m = Math.floor((total % 3600) / 60);
-    const s = total % 60;
-    const fraction = maxTotal > 0 ? total / maxTotal : 0;
-
-    const size = 140;
-    const cx = size / 2;
-    const cy = size / 2;
-    const r = 56;
-
-    // minute hand angle (0-360 based on remaining minutes in current hour)
-    const minAngle = ((m * 60 + s) / 3600) * 360;
-    // second hand angle
-    const secAngle = (s / 60) * 360;
-
-    const minRad = (minAngle - 90) * Math.PI / 180;
-    const secRad = (secAngle - 90) * Math.PI / 180;
-    const minLen = r * 0.7;
-    const secLen = r * 0.85;
-
-    const minX = cx + minLen * Math.cos(minRad);
-    const minY = cy + minLen * Math.sin(minRad);
-    const secX = cx + secLen * Math.cos(secRad);
-    const secY = cy + secLen * Math.sin(secRad);
-
-    const circumference = 2 * Math.PI * r;
-
-    const timeStr = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
-
-    return `
-      <svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
-        <circle cx="${cx}" cy="${cy}" r="${r}" fill="none"
-          stroke="var(--background-modifier-border)" stroke-width="4"/>
-        <circle cx="${cx}" cy="${cy}" r="${r}" fill="none"
-          stroke="var(--interactive-accent)" stroke-width="4"
-          stroke-dasharray="${circumference}"
-          stroke-dashoffset="${circumference * (1 - fraction)}"
-          transform="rotate(-90 ${cx} ${cy})"
-          style="transition: stroke-dashoffset 1s linear;"/>
-        ${[...Array(12)].map((_, i) => {
-          const a = (i * 30 - 90) * Math.PI / 180;
-          const x1 = cx + (r - 7) * Math.cos(a);
-          const y1 = cy + (r - 7) * Math.sin(a);
-          const x2 = cx + (r - 3) * Math.cos(a);
-          const y2 = cy + (r - 3) * Math.sin(a);
-          return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="var(--text-muted)" stroke-width="1.5" stroke-linecap="round"/>`;
-        }).join("")}
-        <line x1="${cx}" y1="${cy}" x2="${minX}" y2="${minY}" stroke="var(--text-normal)" stroke-width="2" stroke-linecap="round"/>
-        <line x1="${cx}" y1="${cy}" x2="${secX}" y2="${secY}" stroke="var(--interactive-accent)" stroke-width="1" stroke-linecap="round"/>
-        <circle cx="${cx}" cy="${cy}" r="2.5" fill="var(--text-normal)"/>
-      </svg>
-      <div style="
-        position: absolute;
-        text-align: center;
-        font-size: 11px;
-        color: var(--text-muted);
-        margin-top: 4px;
-        font-variant-numeric: tabular-nums;
-      ">${timeStr}</div>
-    `;
-  }
-
-  private renderDigitalDisplay(total: number, maxTotal: number): string {
-    const h = Math.floor(total / 3600);
-    const m = Math.floor((total % 3600) / 60);
-    const s = total % 60;
-    const timeStr = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
-
-    const fraction = maxTotal > 0 ? total / maxTotal : 0;
-
-    return `
-      <div style="display: flex; flex-direction: column; align-items: center; gap: 6px;">
-        <span style="
-          font-size: 36px;
-          font-weight: 300;
-          font-variant-numeric: tabular-nums;
-          color: ${this.timerFinished ? "var(--interactive-accent)" : "var(--text-normal)"};
-          letter-spacing: 2px;
-        ">${timeStr}</span>
-        <div style="
-          width: 120px; height: 3px; border-radius: 2px;
-          background: var(--background-modifier-border);
-          overflow: hidden;
-        ">
-          <div style="
-            width: ${fraction * 100}%; height: 100%; border-radius: 2px;
-            background: var(--interactive-accent);
-            transition: width 1s linear;
-          "></div>
-        </div>
-      </div>
-    `;
-  }
-
-  private renderTimerPicker(field: string, label: string, max: number, cur: number): string {
-    const count = max;
-    return `
-      <div class="timer-picker-wrap" data-field="${field}" style="position: relative; width: 44px; height: 38px;">
-        <div class="timer-picker-label" style="
-          width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;
-          font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums;
-          color: var(--text-normal);
-          border: 1px solid var(--background-modifier-border); border-radius: 6px;
-          background: var(--background-modifier-hover);
-          cursor: pointer; user-select: none;
-        ">${String(cur).padStart(2, "0")}</div>
-        <div class="timer-picker-scroll" style="
-          display: none; position: absolute; top: 0; left: 0;
-          width: 100%; height: 84px; overflow-y: auto;
-          scroll-snap-type: y mandatory;
-          border: 1px solid var(--interactive-accent);
-          border-radius: 6px;
-          background: var(--background-modifier-hover);
-          scrollbar-width: none;
-          z-index: 1;
-        ">${Array.from({length: count}, (_, i) => `
-          <div data-value="${i}" style="
-            height: 28px; display: flex; align-items: center; justify-content: center;
-            font-size: 14px; font-variant-numeric: tabular-nums;
-            color: var(--text-muted);
-            scroll-snap-align: center;
-            cursor: pointer;
-            user-select: none;
-          ">${String(i).padStart(2, "0")}</div>
-        `).join("")}</div>
-      </div>
-      <span style="font-size: 12px; color: var(--text-muted);">${label}</span>
-    `;
-  }
-
-  private setPickersEditable(editable: boolean) {
-    this.containerEl.querySelectorAll(".timer-picker-label").forEach(l => {
-      const el = l as HTMLElement;
-      if (editable) {
-        el.style.border = "1px solid var(--background-modifier-border)";
-        el.style.background = "var(--background-modifier-hover)";
-        el.style.cursor = "pointer";
-        el.style.pointerEvents = "auto";
-      } else {
-        el.style.border = "1px solid transparent";
-        el.style.background = "transparent";
-        el.style.cursor = "default";
-        el.style.pointerEvents = "none";
-      }
-    });
-  }
-
-  private updatePickerTexts() {
-    this.containerEl.querySelectorAll(".timer-picker-wrap").forEach(wrap => {
-      const el = wrap as HTMLElement;
-      const field = el.dataset.field!;
-      const label = el.querySelector(".timer-picker-label") as HTMLElement;
-      if (!label) return;
-      const val = field === "h" ? this.timerHours : field === "m" ? this.timerMinutes : this.timerSeconds;
-      label.textContent = String(val).padStart(2, "0");
-    });
-  }
-
-  private startTimer() {
-    // always recalculate from current field values
-    this.timerRemaining = this.timerHours * 3600 + this.timerMinutes * 60 + this.timerSeconds;
-    if (this.timerRemaining <= 0) return;
-
-    this.timerRunning = true;
-    if (this.timerIntervalId !== null) {
-      window.clearInterval(this.timerIntervalId);
-    }
-    this.timerIntervalId = window.setInterval(() => this.timerTick(), 1000);
-    const startBtn = this.containerEl.querySelector("#timer-start-btn") as HTMLButtonElement;
-    if (startBtn) startBtn.textContent = "暂停";
-    const resetBtn = this.containerEl.querySelector("#timer-reset-btn") as HTMLElement;
-    if (resetBtn) resetBtn.style.display = "none";
-    this.updatePickerTexts();
-    this.setPickersEditable(false);
-  }
-
-  private pauseTimer() {
-    this.timerRunning = false;
-    if (this.timerIntervalId !== null) {
-      window.clearInterval(this.timerIntervalId);
-      this.timerIntervalId = null;
-    }
-    const startBtn = this.containerEl.querySelector("#timer-start-btn") as HTMLButtonElement;
-    if (startBtn) startBtn.textContent = "开始";
-    const resetBtn = this.containerEl.querySelector("#timer-reset-btn") as HTMLElement;
-    if (resetBtn) resetBtn.style.display = "inline-block";
-    this.setPickersEditable(true);
-  }
-
-  private timerTick() {
-    if (this.timerRemaining <= 0) {
-      this.pauseTimer();
-      this.timerFinished = true;
-      this.updateTimerDisplay();
-      this.showTimerNotification();
-      return;
-    }
-    this.timerRemaining--;
-    this.updateTimerDisplay();
-  }
-
-  private showTimerNotification() {
-    // remove existing notification if any
-    const existing = this.containerEl.querySelector("#timer-notification");
-    if (existing) existing.remove();
-
-    const content = this.containerEl.querySelector("#homepage-content") as HTMLElement;
-    if (!content) return;
-
-    const overlay = document.createElement("div");
-    overlay.id = "timer-notification";
-    overlay.style.cssText = `
-      position: absolute;
-      top: 0; left: 0; right: 0; bottom: 0;
-      background: rgba(0,0,0,0.4);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      z-index: 20;
-    `;
-
-    overlay.innerHTML = `
-      <div style="
-        background: var(--background-primary);
-        border-radius: 14px;
-        padding: 32px 40px;
-        text-align: center;
-        box-shadow: 0 8px 32px rgba(0,0,0,0.2), 0 0 0 1px var(--background-modifier-border);
-      ">
-        <div style="font-size: 48px; margin-bottom: 8px;">⏰</div>
-        <div style="font-size: 18px; font-weight: 600; color: var(--text-normal); margin-bottom: 6px;">时间到！</div>
-        <div style="font-size: 13px; color: var(--text-muted); margin-bottom: 20px;">
-          计时器已结束（${this.timerHours}时${this.timerMinutes}分${this.timerSeconds}秒）
-        </div>
-        <button id="timer-dismiss-btn" style="
-          padding: 6px 24px; font-size: 13px; border: none; border-radius: 6px;
-          background: var(--interactive-accent); color: var(--text-on-accent);
-          cursor: pointer; font-family: inherit;
-        ">关闭</button>
-      </div>
-    `;
-
-    content.appendChild(overlay);
-
-    const dismiss = () => {
-      overlay.remove();
-      this.timerRemaining = this.timerHours * 3600 + this.timerMinutes * 60 + this.timerSeconds;
-      this.timerFinished = false;
-      this.updateTimerDisplay();
-      const resetBtn = this.containerEl.querySelector("#timer-reset-btn") as HTMLElement;
-      if (resetBtn) resetBtn.style.display = "none";
-      this.setPickersEditable(true);
-    };
-
-    overlay.querySelector("#timer-dismiss-btn")?.addEventListener("click", dismiss);
-
-    overlay.addEventListener("click", (e) => {
-      if (e.target === overlay) dismiss();
-    });
-  }
-
-  // ── 超级桌面 ──────────────────────────────────────────
-
-  private getFileIcon(filename: string): string {
-    const ext = filename.split(".").pop()?.toLowerCase() || "";
-    const map: Record<string, string> = {
-      pdf: "📕", doc: "📘", docx: "📘",
-      xls: "📗", xlsx: "📗", ppt: "📙", pptx: "📙",
-      jpg: "🖼", jpeg: "🖼", png: "🖼", gif: "🖼",
-      svg: "🖼", webp: "🖼",
-      mp3: "🎵", wav: "🎵", flac: "🎵", aac: "🎵",
-      mp4: "🎬", avi: "🎬", mkv: "🎬", mov: "🎬",
-      zip: "📦", rar: "📦", "7z": "📦", tar: "📦", gz: "📦",
-      md: "📝", txt: "📝",
-      js: "💛", ts: "💙", jsx: "💛", tsx: "💙",
-      py: "🐍", html: "🌐", css: "🎨", json: "📋",
-      canvas: "🗺",
-    };
-    return map[ext] || "📄";
-  }
-
-  private renderDesktopItem(name: string, type: "file" | "folder"): string {
-    const icon = type === "folder" ? "📁" : this.getFileIcon(name);
-    return `
-      <div class="desktop-item" data-path="${escapeHtml(name)}" data-type="${type}" style="
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 4px;
-        cursor: pointer;
-        padding: 6px 4px;
-        border-radius: 8px;
-        user-select: none;
-        transition: background 0.1s;
-      " onmouseenter="this.style.background='var(--background-modifier-hover)'" onmouseleave="this.style.background='transparent'">
-        <div style="font-size: 32px; line-height: 1; pointer-events: none;">${icon}</div>
-        <span style="
-          font-size: 10px;
-          color: var(--text-normal);
-          text-align: center;
-          word-break: break-word;
-          line-height: 1.3;
-          max-width: 80px;
-          overflow: hidden;
-          display: -webkit-box;
-          -webkit-line-clamp: 2;
-          -webkit-box-orient: vertical;
-          pointer-events: none;
-        ">${escapeHtml(name)}</span>
-      </div>
-    `;
-  }
-
-  private async renderDesktopContents(i: number) {
-    const grid = this.containerEl.querySelector(`#desktop-grid-${i}`) as HTMLElement;
-    const pathDisplay = this.containerEl.querySelector(`#desktop-path-display-${i}`) as HTMLElement;
-    const backBtn = this.containerEl.querySelector(`#desktop-back-btn-${i}`) as HTMLElement;
-    if (!grid) return;
-
-    const cur = this.desktopCurrentPaths[i] ?? "";
-    const root = this.plugin.settings.desktopFolders[i] ?? "";
-    if (pathDisplay) pathDisplay.textContent = cur || "/";
-    if (backBtn) {
-      backBtn.style.display = cur !== root ? "inline-block" : "none";
-    }
-
-    grid.innerHTML = `
-      <div style="
-        grid-column: 1 / -1;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        height: 100px;
-        color: var(--text-muted);
-        font-size: 13px;
-      ">加载中...</div>
-    `;
-
-    try {
-      if (!this.app.vault.adapter) return;
-      const result = await this.app.vault.adapter.list(cur);
-      const folders = [...result.folders].sort((a, b) => a.localeCompare(b));
-      const files = [...result.files].sort((a, b) => a.localeCompare(b));
-
-      if (folders.length === 0 && files.length === 0) {
-        grid.innerHTML = `
-          <div style="
-            grid-column: 1 / -1;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            height: 100px;
-            color: var(--text-faint);
-            font-size: 13px;
-            gap: 6px;
-          ">
-            <span style="font-size: 36px; opacity: 0.5;">📂</span>
-            <span>该文件夹为空</span>
-          </div>
-        `;
-        return;
-      }
-
-      grid.innerHTML =
-        folders.map((f) => this.renderDesktopItem(f, "folder")).join("") +
-        files.map((f) => this.renderDesktopItem(f, "file")).join("");
-    } catch {
-      grid.innerHTML = `
-        <div style="
-          grid-column: 1 / -1;
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          justify-content: center;
-          height: 100px;
-          color: var(--text-error);
-          font-size: 13px;
-          gap: 6px;
-        ">
-          <span style="font-size: 36px; opacity: 0.5;">⚠️</span>
-          <span>无法访问该文件夹</span>
-        </div>
-      `;
-    }
-  }
-
-  private openDesktopFile(i: number, filename: string) {
-    const cur = this.desktopCurrentPaths[i] ?? "";
-    const relativePath = cur ? `${cur}/${filename}` : filename;
-    if (filename.endsWith(".md")) {
-      this.app.workspace.openLinkText(relativePath, "", false);
-      return;
-    }
-    try {
-      const adapter = this.app.vault.adapter as FileSystemAdapter;
-      const basePath = adapter.getBasePath();
-      const absolutePath = `${basePath}/${relativePath}`;
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      if (typeof require !== "undefined") {
-        const { shell } = require("electron");
-        shell.openPath(absolutePath);
-      }
-    } catch {
-      // silently fail on non-desktop platforms
-    }
-  }
-
-  private navigateToDesktopFolder(i: number, subfolder: string) {
-    const cur = this.desktopCurrentPaths[i] ?? "";
-    this.desktopCurrentPaths[i] = cur ? `${cur}/${subfolder}` : subfolder;
-    this.renderDesktopContents(i);
-  }
-
-  private navigateDesktopBack(i: number) {
-    const cur = this.desktopCurrentPaths[i] ?? "";
-    const root = this.plugin.settings.desktopFolders[i] ?? "";
-    if (cur === root) return;
-    const parts = cur.split("/");
-    parts.pop();
-    const parent = parts.join("/");
-    if (root && !parent.startsWith(root)) {
-      this.desktopCurrentPaths[i] = root;
-    } else {
-      this.desktopCurrentPaths[i] = parent;
-    }
-    this.renderDesktopContents(i);
-  }
-
-  private openDesktopFolderPicker(i: number) {
-    const root = this.plugin.settings.desktopFolders[i] ?? "";
-    new DesktopFolderModal(this.app, root, (newPath) => {
-      this.plugin.settings.desktopFolders[i] = newPath;
-      this.plugin.saveSettings().catch(console.error);
-      this.desktopCurrentPaths[i] = newPath;
-      this.renderDesktopContents(i);
-    }).open();
-  }
-
-  private addDesktopInstance() {
-    this.plugin.settings.desktopFolders.push("");
-    this.plugin.settings.desktopNames.push("");
-    this.plugin.saveSettings().catch(console.error);
-    this.render();
-  }
-
-  private removeDesktopInstance(i: number) {
-    if (this.plugin.settings.desktopFolders.length <= 1) return;
-    this.plugin.settings.desktopFolders.splice(i, 1);
-    this.plugin.settings.desktopNames.splice(i, 1);
-    this.plugin.saveSettings().catch(console.error);
-    this.render();
-  }
-
-  private initDesktopDisplay(i: number) {
-    this.renderDesktopContents(i);
-
-    const grid = this.containerEl.querySelector(`#desktop-grid-${i}`);
-    grid?.addEventListener("dblclick", (e) => {
-      const item = (e.target as HTMLElement).closest(".desktop-item") as HTMLElement | null;
-      if (!item) return;
-      const name = item.dataset.path!;
-      const type = item.dataset.type!;
-      if (type === "folder") {
-        this.navigateToDesktopFolder(i, name);
-      } else {
-        this.openDesktopFile(i, name);
-      }
-    });
-
-    this.containerEl.querySelector(`#desktop-back-btn-${i}`)?.addEventListener("click", () => {
-      this.navigateDesktopBack(i);
-    });
-
-    this.containerEl.querySelector(`#desktop-folder-btn-${i}`)?.addEventListener("click", () => {
-      this.openDesktopFolderPicker(i);
-    });
-
-    this.containerEl.querySelector(`#desktop-add-btn-${i}`)?.addEventListener("click", () => {
-      this.addDesktopInstance();
-    });
-
-    this.containerEl.querySelector(`#desktop-close-btn-${i}`)?.addEventListener("click", () => {
-      this.removeDesktopInstance(i);
-    });
-
-    const nameInput = this.containerEl.querySelector(`#desktop-name-input-${i}`) as HTMLInputElement;
-    if (nameInput) {
-      nameInput.addEventListener("change", () => {
-        this.plugin.settings.desktopNames[i] = nameInput.value.trim();
-        this.plugin.saveSettings().catch(console.error);
-      });
-      nameInput.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") nameInput.blur();
-      });
-      // auto-resize input width to fit content
-      nameInput.addEventListener("input", () => this.autoResizeInput(nameInput, 12));
-      this.autoResizeInput(nameInput, 12);
-    }
-  }
-
-  // ── 侧边栏 ──────────────────────────────────────────
-
-  private sidebarOpen = false;
-  private sidebarSearchQuery = "";
-  private sidebarSearchTimer: number | null = null;
-
-  private renderSidebar() {
-    const sidebar = this.containerEl.querySelector("#homepage-sidebar") as HTMLElement;
-    if (!sidebar) return;
-
-    const isOpen = this.sidebarOpen;
-    sidebar.style.width = isOpen ? "236px" : "28px";
-    sidebar.style.minWidth = isOpen ? "236px" : "28px";
-
-    // pin sidebar below header
-    const header = this.containerEl.querySelector("#homepage-header") as HTMLElement;
-    sidebar.style.top = header ? header.offsetHeight + "px" : "48px";
-
-    // overlay to block interaction with main content when sidebar is open
-    let overlay = this.containerEl.querySelector("#homepage-overlay") as HTMLElement;
-    if (isOpen) {
-      if (!overlay) {
-        overlay = document.createElement("div");
-        overlay.id = "homepage-overlay";
-        const content = this.containerEl.querySelector("#homepage-content") as HTMLElement;
-        content?.appendChild(overlay);
-        overlay.addEventListener("click", () => {
-          this.sidebarOpen = false;
-          this.renderSidebar();
-        });
-      }
-      overlay.style.cssText = `
-        position: absolute;
-        top: 0;
-        left: 0;
-        right: 0;
-        bottom: 0;
-        z-index: 5;
-        background: transparent;
-        pointer-events: auto;
-      `;
-    } else if (overlay) {
-      overlay.remove();
-    }
-
-    sidebar.innerHTML = `
-      <div id="sidebar-toggle" style="
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        padding: 10px 6px;
-        cursor: pointer;
-        color: var(--text-muted);
-        font-size: 13px;
-        white-space: nowrap;
-        border-bottom: ${isOpen ? "1px solid var(--background-modifier-border)" : "none"};
-        user-select: none;
-      ">
-        <span style="font-size: 12px;">${isOpen ? "▶" : "◀"}</span>
-        ${isOpen ? '<span style="font-size: 13px;">组件列表</span>' : ""}
-      </div>
-      ${isOpen ? `
-        <div style="padding: 10px 10px 0 10px;">
-          <input id="sidebar-search" type="text" placeholder="搜索组件..." value="${this.sidebarSearchQuery}" style="
-            width: 100%;
-            padding: 5px 8px;
-            font-size: 12px;
-            border: 1px solid var(--background-modifier-border);
-            border-radius: 5px;
-            background: var(--background-modifier-hover);
-            color: var(--text-normal);
-            outline: none;
-            font-family: inherit;
-            box-sizing: border-box;
-          "/>
-        </div>
-        <div style="
-          flex: 1;
-          overflow-y: auto;
-          padding: 12px 10px;
-          display: flex;
-          flex-direction: column;
-          gap: 16px;
-        ">
-          ${this.renderComponentSection("added", "已添加组件")}
-          ${this.renderComponentSection("pending", "待添加组件")}
-        </div>
-      ` : ""}
-    `;
-
-    sidebar.querySelector("#sidebar-toggle")?.addEventListener("click", () => {
-      this.sidebarOpen = !this.sidebarOpen;
-      if (!this.sidebarOpen) this.sidebarSearchQuery = "";
-      this.renderSidebar();
-    });
-
-    sidebar.querySelector("#sidebar-search")?.addEventListener("input", (e) => {
-      this.sidebarSearchQuery = (e.target as HTMLInputElement).value;
-      if (this.sidebarSearchTimer) window.clearTimeout(this.sidebarSearchTimer);
-      this.sidebarSearchTimer = window.setTimeout(() => {
-        this.sidebarSearchTimer = null;
-        this.renderSidebar();
-      }, 150);
-    });
-
-    if (isOpen) this.bindDragEvents();
-  }
-
-  private componentIcon(id: string): string {
-    const icons: Record<string, string> = {
-      schedule: `<svg width="28" height="28" viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.7"><rect x="4" y="5" width="20" height="19" rx="2"/><line x1="4" y1="11" x2="24" y2="11"/><line x1="9" y1="2" x2="9" y2="7"/><line x1="19" y1="2" x2="19" y2="7"/><line x1="10" y1="15" x2="18" y2="15"/><line x1="12" y1="19" x2="16" y2="19"/></svg>`,
-      timer: `<svg width="28" height="28" viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.7"><circle cx="14" cy="15" r="9"/><line x1="14" y1="15" x2="14" y2="9"/><line x1="14" y1="15" x2="17" y2="15"/><line x1="11" y1="3" x2="17" y2="3"/><line x1="14" y1="3" x2="14" y2="6"/></svg>`,
-      desktop: `<svg width="28" height="28" viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.7"><rect x="2" y="3" width="24" height="17" rx="2"/><line x1="8" y1="23" x2="20" y2="23"/><line x1="14" y1="20" x2="14" y2="23"/></svg>`,
-      todolist: `<svg width="28" height="28" viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.7"><rect x="5" y="4" width="18" height="20" rx="2"/><line x1="9" y1="10" x2="19" y2="10"/><line x1="9" y1="14" x2="19" y2="14"/><line x1="9" y1="18" x2="15" y2="18"/></svg>`,
-    };
-    return icons[id] || `<svg width="28" height="28" viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.7"><rect x="4" y="4" width="20" height="20" rx="3"/></svg>`;
-  }
-
-  private renderComponentSection(zone: "added" | "pending", title: string): string {
-    const q = this.sidebarSearchQuery.toLowerCase().trim();
-    const comps = this.plugin.settings.components.filter(
-      c => c.added === (zone === "added") && (!q || c.name.toLowerCase().includes(q))
-    );
-    return `
-      <div>
-        <div style="
-          font-size: 12px;
-          font-weight: 600;
-          color: var(--text-muted);
-          margin-bottom: 8px;
-          letter-spacing: 0.5px;
-        ">${title}</div>
-        <div class="component-drop-zone" data-zone="${zone}" style="
-          display: flex;
-          flex-wrap: wrap;
-          gap: 8px;
-          min-height: ${comps.length === 0 ? "48px" : "0"};
-          border-radius: 6px;
-          transition: background 0.15s;
-          padding: 2px;
-        ">
-          ${comps.length === 0 ? `
-            <div style="
-              font-size: 12px;
-              color: var(--text-faint);
-              text-align: center;
-              width: 100%;
-              padding: 12px 0;
-            ">暂无</div>
-          ` : comps.map(c => `
-            <div class="component-card" draggable="true" data-id="${c.id}" style="
-              display: flex;
-              flex-direction: column;
-              align-items: center;
-              gap: 4px;
-              width: 64px;
-              cursor: grab;
-              user-select: none;
-            ">
-              <div style="
-                width: 48px;
-                height: 48px;
-                border-radius: 8px;
-                border: 1.5px solid var(--background-modifier-border);
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                color: var(--text-muted);
-                background: var(--background-modifier-hover);
-              ">${this.componentIcon(c.id)}</div>
-              <span style="
-                font-size: 11px;
-                color: var(--text-muted);
-                text-align: center;
-                line-height: 1.3;
-              ">${c.name}</span>
-            </div>
-          `).join("")}
-        </div>
-      </div>
-    `;
-  }
-
-  private bindDragEvents() {
-    const cards = this.containerEl.querySelectorAll(".component-card");
-    const zones = this.containerEl.querySelectorAll(".component-drop-zone");
-
-    cards.forEach(card => {
-      card.addEventListener("dragstart", (e) => {
-        (e as DragEvent).dataTransfer!.setData("text/plain", (card as HTMLElement).dataset.id!);
-        (card as HTMLElement).style.opacity = "0.5";
-      });
-      card.addEventListener("dragend", () => {
-        (card as HTMLElement).style.opacity = "1";
-        zones.forEach(z => (z as HTMLElement).style.background = "");
-      });
-      card.addEventListener("click", () => {
-        const id = (card as HTMLElement).dataset.id!;
-        const comp = this.plugin.settings.components.find(c => c.id === id);
-        if (comp) {
-          comp.added = !comp.added;
-          this.plugin.saveSettings().catch(console.error);
-          this.renderSidebar();
-          this.render();
-        }
-      });
-    });
-
-    zones.forEach(zone => {
-      zone.addEventListener("dragover", (e) => {
-        e.preventDefault();
-        (e as DragEvent).dataTransfer!.dropEffect = "move";
-        (zone as HTMLElement).style.background = "var(--background-modifier-hover)";
-      });
-      zone.addEventListener("dragleave", () => {
-        (zone as HTMLElement).style.background = "";
-      });
-      zone.addEventListener("drop", (e) => {
-        e.preventDefault();
-        (zone as HTMLElement).style.background = "";
-        const id = (e as DragEvent).dataTransfer!.getData("text/plain");
-        const targetZone = (zone as HTMLElement).dataset.zone!;
-        const comp = this.plugin.settings.components.find(c => c.id === id);
-        if (comp && comp.added !== (targetZone === "added")) {
-          comp.added = targetZone === "added";
-          this.plugin.saveSettings().catch(console.error);
-          this.renderSidebar();
-          this.render(); // re-render main area to show/hide component
-        }
-      });
-    });
-  }
+  // ── Header / time ──────────────────────────────────────
 
   private updateTime() {
     const now = new Date();
@@ -1634,7 +740,6 @@ export class HomepageView extends ItemView {
       const newDate = formatDate(now);
       if (dateEl.textContent !== newDate) {
         dateEl.textContent = newDate;
-        // date changed, time period might have changed too
         this.updateGreeting();
       }
     }
@@ -1652,811 +757,9 @@ export class HomepageView extends ItemView {
     greetingTextEl.textContent = `${period}好，`;
   }
 
-  private getYesterdayKey(dateKey: string): string {
-    const [y, m, d] = dateKey.split("-").map(Number);
-    const date = new Date(y, m - 1, d);
-    date.setDate(date.getDate() - 1);
-    return formatDateKey(date.getFullYear(), date.getMonth(), date.getDate());
-  }
+  // ── Coordinator methods ─────────────────────────────────
 
-  private getDateColorStats(dateKey: string) {
-    return TODO_COLORS.map(c => {
-      const todos = this.plugin.settings.todos.filter(t => t.date === dateKey && t.color === c.value);
-      return { color: c.value, label: c.label, total: todos.length, done: todos.filter(t => t.done).length };
-    });
-  }
-
-  private renderStats() {
-    const statsContainer = this.containerEl.querySelector("#homepage-stats");
-    if (!statsContainer) return;
-
-    const stats = this.getDateColorStats(this.selectedDate);
-    const [, m, d] = this.selectedDate.split("-");
-
-    statsContainer.innerHTML = `
-      <div style="font-size: 11px; font-weight: 600; color: var(--text-normal); margin-bottom: 3px;">
-        ${Number(m)}月${Number(d)}日
-      </div>
-      ${stats.map(s => {
-        const pct = s.total > 0 ? Math.round((s.done / s.total) * 100) : 0;
-        return `
-          <div style="display: flex; flex-direction: column; gap: 1px;">
-            <div style="display: flex; align-items: center; gap: 3px;">
-              <span style="
-                width: 7px; height: 7px; border-radius: 50%; background: ${s.color}; flex-shrink: 0;
-              "></span>
-              <span style="font-size: 10px; color: var(--text-muted);">${s.label}</span>
-              <span style="font-size: 10px; color: var(--text-faint); margin-left: auto;">${s.done}/${s.total}</span>
-            </div>
-            <div style="
-              width: 100%; height: 3px; border-radius: 2px;
-              background: var(--background-modifier-border);
-              overflow: hidden;
-            ">
-              <div style="
-                width: ${pct}%; height: 100%; border-radius: 2px;
-                background: ${s.color};
-                transition: width 0.3s;
-              "></div>
-            </div>
-          </div>
-        `;
-      }).join("")}
-      ${(() => {
-        const yesterdayKey = this.getYesterdayKey(this.selectedDate);
-        const undone = this.plugin.settings.todos.filter(t => t.date === yesterdayKey && !t.done);
-        if (undone.length === 0) return "";
-        const [, yMonth, yDay] = yesterdayKey.split("-");
-        return `
-          <div style="margin-top: 12px; border-top: 1px solid var(--background-modifier-border); padding-top: 8px;">
-            <div style="font-size: 10px; font-weight: 600; color: var(--text-muted); margin-bottom: 4px; display: flex; align-items: center; justify-content: space-between;">
-              <span>昨${Number(yMonth)}.${Number(yDay)}</span>
-              <span class="yesterday-sync-all" style="cursor: pointer; color: var(--interactive-accent); font-weight: 400;">全→</span>
-            </div>
-            ${undone.map(t => `
-              <div class="yesterday-item" data-id="${t.id}" style="
-                display: flex; align-items: center; gap: 3px;
-                padding: 2px 0; font-size: 10px;
-              ">
-                <span style="
-                  width: 5px; height: 5px; border-radius: 50%; background: ${t.color}; flex-shrink: 0;
-                "></span>
-                <span style="
-                  flex: 1; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-                ">${escapeHtml(t.text)}</span>
-                <span class="yesterday-sync-one" style="
-                  cursor: pointer; color: var(--text-faint); font-size: 11px; flex-shrink: 0;
-                ">→</span>
-              </div>
-            `).join("")}
-          </div>
-        `;
-      })()}
-      ${(() => {
-        const doneToday = this.plugin.settings.todos.filter(t => t.date === this.selectedDate && t.done);
-        if (doneToday.length === 0) return "";
-        return `
-          <div style="margin-top: 12px; border-top: 1px solid var(--background-modifier-border); padding-top: 8px;">
-            <div style="font-size: 10px; font-weight: 600; color: var(--text-muted); margin-bottom: 4px;">已完成</div>
-            ${doneToday.map(t => `
-              <div style="font-size: 10px; color: var(--text-faint); text-decoration: line-through; padding: 1px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-                <span style="display:inline-block; width:5px; height:5px; border-radius:50%; background:${t.color}; vertical-align:middle; margin-right:3px;"></span>
-                ${escapeHtml(t.text)}
-              </div>
-            `).join("")}
-          </div>
-        `;
-      })()}
-    `;
-
-    // bind yesterday sync events
-    statsContainer.querySelector(".yesterday-sync-all")?.addEventListener("click", () => this.syncAllYesterday());
-    statsContainer.querySelectorAll(".yesterday-sync-one").forEach(el => {
-      el.addEventListener("click", (e) => {
-        e.stopPropagation();
-        const parent = (el as HTMLElement).parentElement;
-        const id = parent?.dataset?.id;
-        if (!id) return;
-        this.syncTodoToToday(id);
-      });
-    });
-  }
-
-  private syncTodoToToday(id: string) {
-    const todo = this.plugin.settings.todos.find(t => t.id === id);
-    if (!todo) return;
-    todo.date = this.selectedDate;
-    this.plugin.saveSettings().catch(console.error);
-    this.renderStats();
-    this.renderCalendar();
-    this.renderTodo();
-    if (this.isComponentAdded("todolist")) this.refreshTodoListView();
-  }
-
-  private syncAllYesterday() {
-    const yesterdayKey = this.getYesterdayKey(this.selectedDate);
-    let changed = false;
-    for (const todo of this.plugin.settings.todos) {
-      if (todo.date === yesterdayKey && !todo.done) {
-        todo.date = this.selectedDate;
-        changed = true;
-      }
-    }
-    if (!changed) return;
-    this.plugin.saveSettings().catch(console.error);
-    this.renderStats();
-    this.renderCalendar();
-    this.renderTodo();
-    if (this.isComponentAdded("todolist")) this.refreshTodoListView();
-  }
-
-  private renderCalendar() {
-    const calContainer = this.containerEl.querySelector("#homepage-calendar");
-    if (!calContainer) return;
-    calContainer.empty();
-
-    const today = new Date();
-    const todayKey = formatDateKey(today.getFullYear(), today.getMonth(), today.getDate());
-    const year = this.calendarYear;
-    const month = this.calendarMonth;
-    const firstDay = new Date(year, month, 1).getDay();
-    const daysInMonth = new Date(year, month + 1, 0).getDate();
-    const weekHeaders = ["日", "一", "二", "三", "四", "五", "六"];
-
-    const dateColorMap = new Map<string, Set<string>>();
-    for (const t of this.plugin.settings.todos) {
-      if (!dateColorMap.has(t.date)) dateColorMap.set(t.date, new Set());
-      dateColorMap.get(t.date)!.add(t.color);
-    }
-
-    calContainer.innerHTML = `
-      <div id="calendar-nav" style="
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        gap: 8px;
-        margin-bottom: 6px;
-      ">
-        <button id="calendar-prev" style="
-          background: transparent;
-          border: none;
-          color: var(--text-muted);
-          cursor: pointer;
-          font-size: 14px;
-          padding: 2px 6px;
-          border-radius: 4px;
-          line-height: 1;
-        ">◀</button>
-        <span style="
-          font-size: 14px;
-          font-weight: 600;
-          color: var(--text-normal);
-          min-width: 90px;
-          text-align: center;
-        ">${year}年${month + 1}月</span>
-        <button id="calendar-next" style="
-          background: transparent;
-          border: none;
-          color: var(--text-muted);
-          cursor: pointer;
-          font-size: 14px;
-          padding: 2px 6px;
-          border-radius: 4px;
-          line-height: 1;
-        ">▶</button>
-        <button id="calendar-today-btn" style="
-          background: transparent;
-          border: 1px solid var(--background-modifier-border);
-          border-radius: 4px;
-          color: var(--text-muted);
-          cursor: pointer;
-          font-size: 11px;
-          padding: 1px 6px;
-          line-height: 1.4;
-        ">今天</button>
-      </div>
-      <div id="calendar-grid" style="
-        display: grid;
-        grid-template-columns: repeat(7, 1fr);
-        gap: 1px;
-        text-align: center;
-      ">
-        ${weekHeaders.map(w => `
-          <div style="
-            font-size: 11px;
-            color: var(--text-muted);
-            padding: 3px 0;
-            font-weight: 500;
-          ">${w}</div>
-        `).join("")}
-        ${(() => {
-          let cells = "";
-          for (let i = 0; i < firstDay; i++) {
-            cells += '<div></div>';
-          }
-          for (let d = 1; d <= daysInMonth; d++) {
-            const key = formatDateKey(year, month, d);
-            const isToday = key === todayKey;
-            const isSelected = key === this.selectedDate;
-            const dotColors = dateColorMap.get(key);
-
-            let bg = "transparent";
-            let color = "var(--text-normal)";
-            let border = "2px solid transparent";
-
-            if (isToday) {
-              bg = "var(--interactive-accent)";
-              color = "var(--text-on-accent)";
-            }
-            if (isSelected && !isToday) {
-              border = "2px solid var(--interactive-accent)";
-            }
-
-            cells += `
-              <div class="calendar-day" data-date="${key}" style="
-                font-size: 12px;
-                color: ${color};
-                padding: 3px 0 10px 0;
-                border-radius: 5px;
-                cursor: pointer;
-                background: ${bg};
-                border: ${border};
-                position: relative;
-                transition: background 0.15s;
-                box-sizing: border-box;
-              ">${d}${dotColors && dotColors.size > 0 ? `
-                <span style="
-                  position: absolute;
-                  bottom: 1px;
-                  left: 50%;
-                  transform: translateX(-50%);
-                  display: flex;
-                  gap: 1px;
-                ">${TODO_COLORS.filter(c => dotColors.has(c.value)).map(c => `
-                  <span style="
-                    width: 3px;
-                    height: 3px;
-                    border-radius: 50%;
-                    background: ${c.value};
-                  "></span>
-                `).join("")}</span>
-              ` : ""}</div>
-            `;
-          }
-          return cells;
-        })()}
-      </div>
-    `;
-
-    calContainer.querySelector("#calendar-prev")?.addEventListener("click", () => {
-      this.calendarMonth--;
-      if (this.calendarMonth < 0) {
-        this.calendarMonth = 11;
-        this.calendarYear--;
-      }
-      this.renderCalendar();
-    });
-
-    calContainer.querySelector("#calendar-next")?.addEventListener("click", () => {
-      this.calendarMonth++;
-      if (this.calendarMonth > 11) {
-        this.calendarMonth = 0;
-        this.calendarYear++;
-      }
-      this.renderCalendar();
-    });
-
-    calContainer.querySelector("#calendar-today-btn")?.addEventListener("click", () => {
-      const now = new Date();
-      this.selectedDate = formatDateKey(now.getFullYear(), now.getMonth(), now.getDate());
-      this.calendarYear = now.getFullYear();
-      this.calendarMonth = now.getMonth();
-      this.renderStats();
-      this.renderCalendar();
-      this.renderTodo();
-    });
-
-    calContainer.querySelectorAll(".calendar-day").forEach(el => {
-      el.addEventListener("click", (e) => {
-        this.selectedDate = (e.currentTarget as HTMLElement).dataset.date!;
-        this.renderStats();
-        this.renderCalendar();
-        this.renderTodo();
-      });
-    });
-  }
-
-  private activeFilter: string | null = null;
-  private searchQuery = "";
-
-  private renderTodo() {
-    if (this.isComponentAdded("todolist")) return; // embedded mode: renderTodoListEmbedded handles this
-    const todoContainer = this.containerEl.querySelector("#homepage-todo");
-    if (!todoContainer) return;
-
-    const filtered = this.getFilteredTodos();
-
-    todoContainer.innerHTML = `
-      <div style="display: flex; align-items: center; gap: 6px;">
-        <span style="font-size: 13px; font-weight: 600; color: var(--text-normal); white-space: nowrap;">${(() => {
-          const [, m, d] = this.selectedDate.split("-");
-          return `${Number(m)}月${Number(d)}日`;
-        })()}</span>
-        <input id="todo-search" type="text" placeholder="搜索..." value="${this.searchQuery}" style="
-          flex: 1;
-          min-width: 0;
-          background: var(--background-modifier-hover);
-          border: 1px solid var(--background-modifier-border);
-          border-radius: 4px;
-          padding: 3px 6px;
-          font-size: 12px;
-          color: var(--text-normal);
-          outline: none;
-          font-family: inherit;
-          box-sizing: border-box;
-        "/>
-        <button id="todo-add-btn" style="
-          background: var(--interactive-accent);
-          color: var(--text-on-accent);
-          border: none;
-          border-radius: 4px;
-          padding: 1px 8px;
-          font-size: 15px;
-          line-height: 1.4;
-          cursor: pointer;
-          flex-shrink: 0;
-        ">+</button>
-      </div>
-      <div id="todo-filters" style="display: flex; gap: 5px; flex-wrap: wrap;">
-        ${TODO_COLORS.map(c => `
-          <span class="todo-filter-chip" data-color="${c.value}" style="
-            display: inline-block;
-            width: 14px;
-            height: 14px;
-            border-radius: 50%;
-            background: ${c.value};
-            cursor: pointer;
-            opacity: ${this.activeFilter === null || this.activeFilter === c.value ? 1 : 0.3};
-            outline: ${this.activeFilter === c.value ? "2px solid var(--text-normal)" : "none"};
-            outline-offset: 1px;
-          " title="${c.label}"></span>
-        `).join("")}
-        ${this.activeFilter !== null ? `
-          <span id="todo-filter-clear" style="
-            font-size: 11px;
-            color: var(--text-muted);
-            cursor: pointer;
-            line-height: 14px;
-          ">清除</span>
-        ` : ""}
-      </div>
-      <div id="todo-list" style="display: flex; flex-direction: column; gap: 1px;">
-        ${filtered.length === 0 ? `
-          <div style="text-align: center; color: var(--text-faint); font-size: 12px; padding: 16px 0;">
-            ${this.plugin.settings.todos.length === 0 ? "暂无待办，点击 + 添加" : this.plugin.settings.todos.some(t => t.date === this.selectedDate) ? "无匹配结果" : "该日期暂无待办"}
-          </div>
-        ` : filtered.map(todo => `
-          <div class="todo-item" data-id="${todo.id}" style="
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            padding: 4px 4px;
-            border-radius: 4px;
-            font-size: 12px;
-          ">
-            <span class="todo-check" style="
-              cursor: pointer;
-              font-size: 14px;
-              color: ${todo.done ? "var(--text-faint)" : todo.color};
-              flex-shrink: 0;
-            ">${todo.done ? "☑" : "☐"}</span>
-            <span style="
-              flex: 1;
-              color: var(--text-normal);
-              text-decoration: ${todo.done ? "line-through" : "none"};
-              opacity: ${todo.done ? 0.5 : 1};
-              overflow: hidden;
-              text-overflow: ellipsis;
-              white-space: nowrap;
-            ">${escapeHtml(todo.text)}</span>
-            ${todo.startTime ? `<span style="font-size:10px; color:var(--text-faint); flex-shrink:0;">${todo.startTime}${todo.endTime ? `-${todo.endTime}` : ""}</span>` : ""}
-            <span class="todo-delete" style="
-              cursor: pointer;
-              color: var(--text-faint);
-              font-size: 13px;
-              flex-shrink: 0;
-              visibility: hidden;
-            ">×</span>
-          </div>
-        `).join("")}
-      </div>
-    `;
-
-    this.bindTodoEvents();
-  }
-
-  private bindTodoEvents() {
-    // Add button
-    this.containerEl.querySelector("#todo-add-btn")?.addEventListener("click", () => {
-      new TodoAddModal(this.app, this.selectedDate, (text, color, date, startTime, endTime) => this.addTodo(text, color, date, startTime, endTime)).open();
-    });
-
-    // Search
-    this.containerEl.querySelector("#todo-search")?.addEventListener("input", (e) => {
-      this.searchQuery = (e.target as HTMLInputElement).value;
-      this.renderTodo();
-    });
-
-    // Filter chips
-    this.containerEl.querySelectorAll(".todo-filter-chip").forEach(el => {
-      el.addEventListener("click", (e) => {
-        const color = (e.currentTarget as HTMLElement).dataset.color!;
-        this.activeFilter = this.activeFilter === color ? null : color;
-        this.renderTodo();
-      });
-    });
-
-    // Clear filter
-    this.containerEl.querySelector("#todo-filter-clear")?.addEventListener("click", () => {
-      this.activeFilter = null;
-      this.renderTodo();
-    });
-
-    // Toggle todo
-    this.containerEl.querySelectorAll(".todo-check").forEach(el => {
-      el.addEventListener("click", (e) => {
-        const parent = (e.currentTarget as HTMLElement).parentElement;
-        const id = parent?.dataset?.id;
-        if (!id) return;
-        this.toggleTodo(id);
-      });
-    });
-
-    // Delete todo
-    this.containerEl.querySelectorAll(".todo-delete").forEach(el => {
-      el.addEventListener("click", (e) => {
-        e.stopPropagation();
-        const parent = (e.currentTarget as HTMLElement).parentElement;
-        const id = parent?.dataset?.id;
-        if (!id) return;
-        this.deleteTodo(id);
-      });
-    });
-
-    // Hover show delete
-    this.setupHoverDeleteButton(".todo-item", ".todo-delete");
-
-  }
-
-  // Embedded mode: render full UI (tabs + content) into schedule's right panel
-  private renderTodoListEmbedded() {
-    const container = this.containerEl.querySelector("#homepage-todo");
-    if (!container) return;
-
-    const oldContent = container.querySelector("#homepage-todolist-embed-content");
-    const scrollTop = oldContent ? oldContent.scrollTop : 0;
-
-    container.innerHTML = `
-      <div style="display:flex; align-items:center; gap:4px; margin-bottom:6px; flex-shrink:0;">
-        <span style="font-size:12px; font-weight:600; color:var(--text-normal);">待办</span>
-        <div style="display:flex; gap:3px; flex:1;">
-          ${(["today","week","month"] as const).map(m => {
-            const labels: Record<string, string> = { today: "今天", week: "本周", month: "本月" };
-            return `<button class="todolist-tab" data-mode="${m}" style="
-              padding: 1px 6px;
-              font-size: 10px;
-              border-radius: 3px;
-              border: 1px solid var(--background-modifier-border);
-              background: ${this.todoListMode === m ? "var(--interactive-accent)" : "transparent"};
-              color: ${this.todoListMode === m ? "var(--text-on-accent)" : "var(--text-muted)"};
-              cursor: pointer;
-              font-family: inherit;
-              line-height: 1.5;
-            ">${labels[m]}</button>`;
-          }).join("")}
-        </div>
-        <button class="todolist-add" style="
-          background: var(--interactive-accent);
-          color: var(--text-on-accent);
-          border: none;
-          border-radius: 3px;
-          padding: 0px 6px;
-          font-size: 13px;
-          line-height: 1.5;
-          cursor: pointer;
-          flex-shrink: 0;
-        ">+</button>
-      </div>
-      <div id="homepage-todolist-embed-content" style="flex:1; overflow-y:auto;"></div>
-    `;
-
-    const newContent = container.querySelector("#homepage-todolist-embed-content") as HTMLElement;
-    this.renderTodoListContent(newContent);
-    newContent.scrollTop = scrollTop;
-    this.bindTodoListEvents();
-  }
-
-  // Standalone mode: render into the separate todolist card
-  private renderTodoListStandalone() {
-    const content = this.containerEl.querySelector("#homepage-todolist-content");
-    if (!content) return;
-
-    // Update tab button styles in header
-    this.containerEl.querySelectorAll(".todolist-tab").forEach(el => {
-      const mode = (el as HTMLElement).dataset.mode;
-      const active = mode === this.todoListMode;
-      (el as HTMLElement).style.background = active ? "var(--interactive-accent)" : "transparent";
-      (el as HTMLElement).style.color = active ? "var(--text-on-accent)" : "var(--text-muted)";
-    });
-
-    this.renderTodoListContent(content);
-    this.bindTodoListEvents();
-  }
-
-  // Shared rendering: Gantt for today, grouped list for week/month
-  private refreshTodoListView() {
-    if (this.isComponentAdded("schedule") && this.isComponentAdded("todolist")) {
-      this.renderTodoListEmbedded();
-    } else if (this.isComponentAdded("todolist")) {
-      this.renderTodoListStandalone();
-    }
-  }
-
-  private renderTodoListContent(content: Element) {
-    const scrollTop = (content as HTMLElement).scrollTop;
-
-    const today = new Date();
-    const todayKey = formatDateKey(today.getFullYear(), today.getMonth(), today.getDate());
-
-    let dateFilter: (date: string) => boolean;
-    if (this.todoListMode === "today") {
-      dateFilter = (d) => d === todayKey;
-    } else if (this.todoListMode === "week") {
-      const { start, end } = this.getWeekRange();
-      dateFilter = (d) => d >= start && d <= end;
-    } else {
-      const { start, end } = this.getMonthRange();
-      dateFilter = (d) => d >= start && d <= end;
-    }
-
-    const todos = this.plugin.settings.todos.filter(t => dateFilter(t.date));
-
-    if (this.todoListMode === "today") {
-      const timed = todos.filter(t => t.startTime && t.endTime);
-      const untimed = todos.filter(t => !t.startTime || !t.endTime);
-
-      if (timed.length > 0) {
-        this.renderGanttView(content, timed, untimed);
-      } else {
-        this.renderSimpleList(content, todos, false);
-      }
-    } else {
-      const grouped: Map<string, TodoItem[]> = new Map();
-      for (const t of todos) {
-        const list = grouped.get(t.date) || [];
-        list.push(t);
-        grouped.set(t.date, list);
-      }
-      const sortedDates = [...grouped.keys()].sort();
-
-      if (sortedDates.length === 0) {
-        content.innerHTML = `<div style="text-align:center; color:var(--text-faint); font-size:12px; padding:20px 0;">暂无待办</div>`;
-      } else {
-        content.innerHTML = sortedDates.map(dateKey => {
-          const [, m, d] = dateKey.split("-").map(Number);
-          const dateLabel = `${m}月${d}日`;
-          const items = grouped.get(dateKey)!;
-          return `
-            <div style="margin-bottom: 10px;">
-              <div style="font-size:12px; font-weight:600; color:var(--text-muted); margin-bottom:4px; padding-bottom:2px; border-bottom:1px solid var(--background-modifier-border);">${dateLabel}</div>
-              ${items.map(todo => this.renderTodoListItem(todo, true)).join("")}
-            </div>
-          `;
-        }).join("");
-      }
-    }
-
-    (content as HTMLElement).scrollTop = scrollTop;
-  }
-
-  private parseMinutes(time: string): number {
-    const [h, m] = time.split(":").map(Number);
-    return h * 60 + m;
-  }
-
-  private formatDuration(startTime: string, endTime: string): string {
-    const mins = this.parseMinutes(endTime) - this.parseMinutes(startTime);
-    const h = Math.floor(mins / 60);
-    const m = mins % 60;
-    if (h === 0) return `${m}分钟`;
-    if (m === 0) return `${h}小时`;
-    return `${h}小时${m}分钟`;
-  }
-
-  private renderGanttView(container: Element, timed: TodoItem[], untimed: TodoItem[]) {
-    const HOUR_H = 40;
-    const LABEL_W = 42;
-    const STRIP_W = 5;
-    const BAR_LEFT = LABEL_W + 4;
-    const BAR_RIGHT = 4;
-
-    // Determine time range
-    let minMin = 24 * 60, maxMin = 0;
-    for (const t of timed) {
-      if (t.startTime) minMin = Math.min(minMin, this.parseMinutes(t.startTime));
-      if (t.endTime) maxMin = Math.max(maxMin, this.parseMinutes(t.endTime));
-    }
-    // Clamp to 06:00-24:00
-    minMin = Math.min(minMin, 360);  // 06:00
-    maxMin = Math.max(maxMin, 1380); // 23:00
-    // Round to full hours
-    const startHour = Math.floor(minMin / 60);
-    const endHour = Math.ceil(maxMin / 60);
-    const totalH = endHour - startHour;
-    const totalHeight = totalH * HOUR_H;
-
-    let html = `<div style="position:relative; width:100%; height:${totalHeight + 16}px;">`;
-
-    // Hour grid lines + labels
-    for (let h = startHour; h <= endHour; h++) {
-      const top = (h - startHour) * HOUR_H;
-      html += `<div style="position:absolute; left:0; top:${top}px; width:${LABEL_W - 4}px; font-size:10px; color:var(--text-faint); text-align:right; padding-right:4px; line-height:1;">${String(h).padStart(2,"0")}:00</div>`;
-      html += `<div style="position:absolute; left:${BAR_LEFT}px; right:${BAR_RIGHT}px; top:${top}px; height:0; border-top:1px solid var(--background-modifier-border);"></div>`;
-    }
-
-    // Todo bars — thin colored strip + text beside it
-    for (const t of timed) {
-      const startMin = this.parseMinutes(t.startTime!);
-      const endMin = this.parseMinutes(t.endTime!);
-      const top = ((startMin - startHour * 60) / 60) * HOUR_H;
-      const h = Math.max(16, ((endMin - startMin) / 60) * HOUR_H);
-
-      html += `
-        <div class="todolist-gantt-bar" data-id="${t.id}" style="
-          position: absolute;
-          left: ${BAR_LEFT}px;
-          right: ${BAR_RIGHT}px;
-          top: ${top}px;
-          height: ${h}px;
-          cursor: pointer;
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          box-sizing: border-box;
-        ">
-          <div style="
-            width: ${STRIP_W}px;
-            height: 100%;
-            min-height: 100%;
-            background: ${t.color};
-            border-radius: 3px;
-            flex-shrink: 0;
-            opacity: ${t.done ? 0.4 : 0.85};
-          "></div>
-          <div style="flex:1; min-width:0; display:flex; flex-direction:column; justify-content:center; gap:1px;">
-            <span style="font-size:11px; color:var(--text-normal); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; line-height:1.3; text-decoration:${t.done ? 'line-through' : 'none'}; opacity:${t.done ? 0.5 : 1};">${escapeHtml(t.text)}</span>
-            <span style="font-size:10px; color:var(--text-muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; line-height:1.3;">${t.startTime}-${t.endTime} · ${this.formatDuration(t.startTime!, t.endTime!)}</span>
-          </div>
-          <span class="todolist-delete" style="cursor:pointer; color:var(--text-faint); font-size:13px; flex-shrink:0; font-weight:bold; visibility:hidden; line-height:1;">×</span>
-        </div>`;
-    }
-
-    html += `</div>`;
-
-    // Untimed todos below the gantt
-    if (untimed.length > 0) {
-      html += `<div style="margin-top:12px; padding-top:8px; border-top:1px solid var(--background-modifier-border);">`;
-      html += untimed.map(t => this.renderTodoListItem(t, true)).join("");
-      html += `</div>`;
-    }
-
-    container.innerHTML = html;
-  }
-
-  private renderTodoListItem(todo: TodoItem, showTime: boolean): string {
-    const timeStr = (showTime && todo.startTime) ? ` ${todo.startTime}${todo.endTime ? `-${todo.endTime}` : ""}` : "";
-    return `
-      <div class="todolist-item" data-id="${todo.id}" style="display:flex; align-items:center; gap:6px; padding:3px 4px; border-radius:4px; font-size:12px;">
-        <span class="todolist-check" style="cursor:pointer; font-size:14px; color:${todo.done ? 'var(--text-faint)' : todo.color}; flex-shrink:0;">${todo.done ? '☑' : '☐'}</span>
-        <span style="flex:1; color:var(--text-normal); text-decoration:${todo.done ? 'line-through' : 'none'}; opacity:${todo.done ? 0.5 : 1}; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(todo.text)}</span>
-        ${timeStr ? `<span style="font-size:10px; color:var(--text-faint); flex-shrink:0;">${timeStr}</span>` : ""}
-        <span class="todolist-delete" style="cursor:pointer; color:var(--text-faint); font-size:13px; flex-shrink:0; visibility:hidden;">×</span>
-      </div>`;
-  }
-
-  private renderSimpleList(container: Element, todos: TodoItem[], showTime: boolean) {
-    if (todos.length === 0) {
-      container.innerHTML = `<div style="text-align:center; color:var(--text-faint); font-size:12px; padding:20px 0;">暂无待办</div>`;
-    } else {
-      container.innerHTML = todos.map(t => this.renderTodoListItem(t, showTime)).join("");
-    }
-  }
-
-  private bindTodoListEvents() {
-    // Check toggle
-    this.containerEl.querySelectorAll(".todolist-check").forEach(el => {
-      el.addEventListener("click", (e) => {
-        const parent = (e.currentTarget as HTMLElement).parentElement;
-        const id = parent?.dataset?.id;
-        if (!id) return;
-        this.toggleTodo(id);
-      });
-    });
-
-    // Delete
-    this.containerEl.querySelectorAll(".todolist-delete").forEach(el => {
-      el.addEventListener("click", (e) => {
-        e.stopPropagation();
-        const parent = (e.currentTarget as HTMLElement).parentElement;
-        const id = parent?.dataset?.id;
-        if (!id) return;
-        this.deleteTodo(id);
-      });
-    });
-
-    // Hover show delete
-    this.setupHoverDeleteButton(".todolist-item", ".todolist-delete");
-
-    // Gantt bar toggle
-    this.containerEl.querySelectorAll(".todolist-gantt-bar").forEach(el => {
-      el.addEventListener("click", (e) => {
-        if ((e.target as HTMLElement).closest(".todolist-delete")) return;
-        const id = (e.currentTarget as HTMLElement).dataset.id!;
-        this.toggleTodo(id);
-      });
-    });
-    this.setupHoverDeleteButton(".todolist-gantt-bar", ".todolist-delete");
-
-    // Tab buttons
-    this.containerEl.querySelectorAll(".todolist-tab").forEach(el => {
-      el.addEventListener("click", (e) => {
-        this.todoListMode = (e.currentTarget as HTMLElement).dataset.mode as "today" | "week" | "month";
-        this.refreshTodoListView();
-      });
-    });
-
-    // Add button
-    this.containerEl.querySelector(".todolist-add")?.addEventListener("click", () => {
-      const today = new Date();
-      const todayKey = formatDateKey(today.getFullYear(), today.getMonth(), today.getDate());
-      new TodoAddModal(this.app, todayKey, (text, color, date, startTime, endTime) => this.addTodo(text, color, date, startTime, endTime)).open();
-    });
-  }
-
-  private getWeekRange(): { start: string; end: string } {
-    const now = new Date();
-    const dayOfWeek = now.getDay();
-    const mondayOffset = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
-    const monday = new Date(now);
-    monday.setDate(now.getDate() + mondayOffset);
-    const sunday = new Date(monday);
-    sunday.setDate(monday.getDate() + 6);
-    return {
-      start: formatDateKey(monday.getFullYear(), monday.getMonth(), monday.getDate()),
-      end: formatDateKey(sunday.getFullYear(), sunday.getMonth(), sunday.getDate()),
-    };
-  }
-
-  private getMonthRange(): { start: string; end: string } {
-    const now = new Date();
-    const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
-    const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-    return {
-      start: formatDateKey(firstDay.getFullYear(), firstDay.getMonth(), firstDay.getDate()),
-      end: formatDateKey(lastDay.getFullYear(), lastDay.getMonth(), lastDay.getDate()),
-    };
-  }
-
-  private getFilteredTodos(): TodoItem[] {
-    return this.plugin.settings.todos.filter(t => {
-      if (t.date !== this.selectedDate) return false;
-      if (this.activeFilter && t.color !== this.activeFilter) return false;
-      if (this.searchQuery && !t.text.toLowerCase().includes(this.searchQuery.toLowerCase())) return false;
-      return true;
-    });
-  }
-
-  private addTodo(text: string, color: string, date: string, startTime: string, endTime: string) {
+  addTodo(text: string, color: string, date: string, startTime: string, endTime: string) {
     const todo: TodoItem = {
       id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
       text,
@@ -2468,31 +771,58 @@ export class HomepageView extends ItemView {
     };
     this.plugin.settings.todos.push(todo);
     this.plugin.saveSettings().catch(console.error);
-    this.renderStats();
-    this.renderCalendar();
-    this.renderTodo();
-    if (this.isComponentAdded("todolist")) this.refreshTodoListView();
+    this.schedule.renderStats();
+    this.schedule.renderCalendar();
+    this.schedule.renderTodo();
+    if (this.isComponentAdded("todolist")) this.todolist.refresh();
   }
 
-  private toggleTodo(id: string) {
+  toggleTodo(id: string) {
     const todo = this.plugin.settings.todos.find(t => t.id === id);
     if (todo) {
       todo.done = !todo.done;
       this.plugin.saveSettings().catch(console.error);
-      this.renderStats();
-      this.renderCalendar();
-      this.renderTodo();
-      if (this.isComponentAdded("todolist")) this.refreshTodoListView();
+      this.schedule.renderStats();
+      this.schedule.renderCalendar();
+      this.schedule.renderTodo();
+      if (this.isComponentAdded("todolist")) this.todolist.refresh();
     }
   }
 
-  private deleteTodo(id: string) {
+  deleteTodo(id: string) {
     this.plugin.settings.todos = this.plugin.settings.todos.filter(t => t.id !== id);
     this.plugin.saveSettings().catch(console.error);
-    this.renderStats();
-    this.renderCalendar();
-    this.renderTodo();
-    if (this.isComponentAdded("todolist")) this.refreshTodoListView();
+    this.schedule.renderStats();
+    this.schedule.renderCalendar();
+    this.schedule.renderTodo();
+    if (this.isComponentAdded("todolist")) this.todolist.refresh();
   }
 
+  syncTodoToToday(id: string) {
+    const todo = this.plugin.settings.todos.find(t => t.id === id);
+    if (!todo) return;
+    todo.date = this.schedule.selectedDate;
+    this.plugin.saveSettings().catch(console.error);
+    this.schedule.renderStats();
+    this.schedule.renderCalendar();
+    this.schedule.renderTodo();
+    if (this.isComponentAdded("todolist")) this.todolist.refresh();
+  }
+
+  syncAllYesterday() {
+    const yesterdayKey = this.schedule.getYesterdayKey(this.schedule.selectedDate);
+    let changed = false;
+    for (const todo of this.plugin.settings.todos) {
+      if (todo.date === yesterdayKey && !todo.done) {
+        todo.date = this.schedule.selectedDate;
+        changed = true;
+      }
+    }
+    if (!changed) return;
+    this.plugin.saveSettings().catch(console.error);
+    this.schedule.renderStats();
+    this.schedule.renderCalendar();
+    this.schedule.renderTodo();
+    if (this.isComponentAdded("todolist")) this.todolist.refresh();
+  }
 }

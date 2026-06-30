@@ -1,7 +1,7 @@
 import { Plugin } from "obsidian";
 import type { HomepageSettings } from "./types";
 import { VIEW_TYPE_HOMEPAGE, DEFAULT_COMPONENTS, DEFAULT_SETTINGS } from "./constants";
-import { HomepageView } from "./view";
+import HomepageView from "./view";
 import { HomepageSettingTab } from "./settings";
 
 export default class HomepagePlugin extends Plugin {
