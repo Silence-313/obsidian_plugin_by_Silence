@@ -110,7 +110,7 @@ styles.css           # 日历 hover 样式
 - TodoItem 的 `date` 字段关联日期，`color` 字段对应 `TODO_COLORS`（红/橙/黄/绿）
 - 日历日期选中态用 `2px solid var(--interactive-accent)` 描边（非今日），今日用 accent 实心填充
 - `setupCardPosition(container, componentId, wrapperSelector)` 统一的卡片定位方法，恢复布局/居中、处理拖拽、碰撞检测、保存位置
-- `isInteractiveTarget(target)` 检查点击目标是否为交互元素，决定是否触发拖拽。需包含所有可点击元素（`.yesterday-sync-one`、`.yesterday-sync-all` 等），否则卡片拖拽会吞掉点击事件
+- `isInteractiveTarget(target)` 检查点击目标是否为交互元素，决定是否触发拖拽。需包含所有可点击元素（`canvas`、`.llmwiki-link`、`.yesterday-sync-one`、`.yesterday-sync-all` 等），否则卡片 `pointerdown` + `setPointerCapture` 会吞掉点击事件
 - 缩放手柄检测：pointerdown 中判断点击是否在右下角 20px 区域（`e.clientX > rect.right - 20 && e.clientY > rect.bottom - 20`），是则设 `isResizing = true` 跳过拖拽
 - `constrainNoOverlap()` 检测卡片间碰撞，沿最短方向推开（含 12px 间隙）。外层循环迭代直到位置稳定（最多 10 次），避免解决 A 与 B 重叠后被推回 A 的连锁问题
 - `expandContentHeight()` 根据最低卡片的底部位置动态设 `minHeight`，确保内容区可滚动到所有卡片
@@ -131,7 +131,11 @@ styles.css           # 日历 hover 样式
 
 - **API Key 存储**：使用 macOS Keychain（`security add-generic-password` / `security find-generic-password -w`），data.json 只存 `apiKeyInKeychain: true` 标记位。设置界面显示 `password` 类型掩码输入框，读写通过 `utils.ts` 中的 `saveApiKeyToKeychain()` / `loadApiKeyFromKeychain()` / `deleteApiKeyFromKeychain()`
 - **知识库构建（buildWiki）**：扫描 vault 所有 .md 笔记 → 逐篇调用 DeepSeek API 生成摘要 → 生成 index.md + overview.md + 用户画像 → 临时待办页面在维护后删除。笔记增量更新通过 `source-mtime` 跟踪
-- **Agent 工具系统**：`AGENT_TOOLS` 数组定义工具（OpenAI function-calling 格式），`executeTool()` 本地分发执行，`agentLoop()` 多轮对话循环处理 tool_calls（最多 5 轮）。当前工具：`get_current_time`、`get_todos`（按日期/状态/优先级/关键词筛选）、`get_todo_stats`（统计概览）、`add_todos`（添加待办到任意日期，Agent 根据当前时间推算目标日期）。System prompt 禁止使用 Markdown 表格（渲染有 bug，用列表替代）
+- **Agent 工具系统**：`AGENT_TOOLS` 数组定义工具（OpenAI function-calling 格式），`executeTool()` 本地分发执行（async，方便 `web_search` 网络请求）。当前工具：`get_current_time`、`get_todos`（按日期/状态/优先级/关键词筛选）、`get_todo_stats`（统计概览）、`add_todos`（添加待办到任意日期）、`web_search`（DuckDuckGo 搜索，通过 Obsidian `requestUrl()` 绕过 CSP/CORS，JSON API + HTML 双层 fallback）。System prompt 禁止使用 Markdown 表格（渲染有 bug，用列表替代）
+- **Agent Loop 两分支架构**：先非流式探测（带 tools，判断是否需要工具调用）→ 需要工具则执行工具后流式汇总 → 不需要工具则直接流式回复。DeepSeek API 在启用 `tools` + `tool_choice: "auto"` 时不支持 SSE 流式，所以流式路径不带 tools 以获取真正的逐字流式输出
+- **流式渲染**：`streamResponse()` helper 共用。空助手气泡占位 → `requestAnimationFrame` 驱动 DOM patch（`innerHTML = formatMessage(content)`，流式过程中 markdown 实时渲染）→ 流式完成后重置 `_streamingIdx`。工具执行期间通过 activity 消息显示脉冲提示
+- **链接交互**：`formatMessage()` 将 `[text](url)` 渲染为 `<span class="llmwiki-link" data-url>`，点击弹出"复制链接"/"在浏览器中打开"菜单，`navigator.clipboard.writeText()` + `execCommand("copy")` fallback
+- **输入焦点保持**：`_keepInputFocus` 标记位，`render()` 末尾恢复焦点到 `#llmwiki-chat-input`，光标定位到文本末尾
 - **记忆管线**：每次对话 → `appendChatLog()` 追加到 `llm-wiki/chat-log.md` → 维护时 `generateUserProfile()` 消化对话 + 现有画像 → `concepts/用户画像.md` → 清空 chat-log.md
 - **Markdown 渲染**：`formatMessage()` 分 4 阶段渲染：代码块保护 → 块级元素（标题/h1-h6、分割线、引用、有序/无序列表）→ 内联元素（链接、粗体、斜体、行内代码、删除线）→ 代码块还原
 - **API 调用**：`callDeepSeekRaw()` 统一入口，`withTools=true` 时附加 `tools` + `tool_choice: "auto"`。对话用 `deepseek-chat` 模型，temperature 0.7，max_tokens 4096
@@ -144,7 +148,8 @@ styles.css           # 日历 hover 样式
 - **动态适配**：所有视觉/物理参数通过 `s = sqrt(cardW*cardH) / 548` 等比缩放（参考尺寸 600×500），节点半径/边线宽/字号/速度上限等统一乘 s
 - **Canvas 渲染**：Retina 适配（devicePixelRatio），节点按类型着色（源笔记橙/摘要绿/概念蓝/索引紫），悬停高亮+tooltip
 - **边界约束**：上边界留 60px 给工具栏，其余三边留 radius+4px。重力和初始中心下移 30px 补偿工具栏偏移
-- **交互**：mousedown 命中节点→拖拽，命中空白→平移。wheel→缩放（0.2x-3x）。双击→打开文件
+- **交互**：mousedown 命中节点→拖拽（保留点击偏移，节点不会跳动），命中空白→平移。wheel→缩放（0.2x-3x）。双击→打开文件
+- **节点拖拽联动**：拖拽时模拟持续运行，被拖拽节点跳过所有力计算（位置由光标锁定），关联边吸引力 ×4 形成橡皮筋效果，邻居节点跟随移动，无关节点保持原位置。拖拽结束后 80 帧快速 settle
 
 ### 学习模式实现细节
 

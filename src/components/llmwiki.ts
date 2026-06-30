@@ -1,3 +1,4 @@
+import { requestUrl } from "obsidian";
 import type HomepageView from "../view";
 import type { ChatMessage } from "../types";
 import { escapeHtml, loadApiKeyFromKeychain, saveApiKeyToKeychain, deleteApiKeyFromKeychain } from "../utils";
@@ -80,9 +81,24 @@ const AGENT_TOOLS: ToolDef[] = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "web_search",
+      description: "搜索互联网获取实时信息。当知识库无法回答用户问题、需要最新资讯、查询事实性信息时使用。返回搜索结果列表（标题、摘要、链接）。",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "搜索关键词" },
+          num_results: { type: "number", description: "返回结果数量，默认 5，最多 10。" },
+        },
+        required: ["query"],
+      },
+    },
+  },
 ];
 
-function executeTool(name: string, args: Record<string, any>, view: HomepageView): string {
+async function executeTool(name: string, args: Record<string, any>, view: HomepageView): Promise<string> {
   switch (name) {
     case "get_current_time": {
       const now = new Date();
@@ -241,6 +257,87 @@ function executeTool(name: string, args: Record<string, any>, view: HomepageView
       }, null, 2);
     }
 
+    case "web_search": {
+      const query = args.query?.trim();
+      if (!query) return JSON.stringify({ error: "query 参数不能为空" });
+      const numResults = Math.min(args.num_results || 5, 10);
+
+      // Try DDG JSON API via Obsidian's requestUrl (bypasses CSP/CORS)
+      try {
+        const apiUrl = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`;
+        const apiResp = await requestUrl({ url: apiUrl, method: "GET" });
+        if (apiResp.status === 200) {
+          const data = apiResp.json;
+          const results: Array<{ title: string; snippet: string; url: string }> = [];
+
+          // Instant answer
+          if (data.AbstractText) {
+            results.push({
+              title: data.Heading || query,
+              snippet: (data.AbstractText as string).substring(0, 500),
+              url: data.AbstractURL || "",
+            });
+          }
+
+          // RelatedTopics — handle both flat items and nested categories
+          const topics: any[] = data.RelatedTopics || [];
+          const collectTopics = (ts: any[]) => {
+            for (const t of ts) {
+              if (results.length >= numResults) break;
+              if (t.Text) {
+                const parts = (t.Text as string).split(" - ");
+                results.push({
+                  title: (parts[0] || t.Text).substring(0, 120),
+                  snippet: (t.Text as string).substring(0, 300),
+                  url: t.FirstURL || "",
+                });
+              }
+              if (t.Topics) collectTopics(t.Topics);
+            }
+          };
+          collectTopics(topics);
+
+          if (results.length > 0) {
+            return JSON.stringify({ query, resultCount: results.length, results }, null, 2);
+          }
+        }
+      } catch {
+        // JSON API failed, fall through to HTML scraping
+      }
+
+      // Fallback: scrape DDG HTML via requestUrl
+      try {
+        const htmlUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+        const htmlResp = await requestUrl({ url: htmlUrl, method: "GET" });
+        if (htmlResp.status !== 200) throw new Error(`HTTP ${htmlResp.status}`);
+        const html = htmlResp.text;
+
+        const results: Array<{ title: string; snippet: string; url: string }> = [];
+        // Parse <a class="result__a" href="...">Title</a> ... <a class="result__snippet">Snippet</a>
+        const re = /<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?class="result__snippet"[^>]*>([\s\S]*?)<\//gi;
+        let match;
+        while ((match = re.exec(html)) !== null && results.length < numResults) {
+          const rawTitle = match[2].replace(/<[^>]+>/g, "").trim();
+          const rawSnippet = match[3].replace(/<[^>]+>/g, "").trim();
+          if (!rawTitle || !rawSnippet) continue;
+          const uddgMatch = match[1].match(/uddg=(https?%3A[^&]+)/);
+          results.push({
+            title: rawTitle.substring(0, 120),
+            snippet: rawSnippet.substring(0, 300),
+            url: uddgMatch ? decodeURIComponent(uddgMatch[1]) : match[1],
+          });
+        }
+
+        if (results.length > 0) {
+          return JSON.stringify({ query, resultCount: results.length, results }, null, 2);
+        }
+      } catch {
+        // HTML scraping also failed
+      }
+
+      return JSON.stringify({ query, message: "未找到搜索结果，请尝试更换关键词或稍后重试。", results: [] });
+    }
+
     default:
       return JSON.stringify({ error: `Unknown tool: ${name}` });
   }
@@ -276,6 +373,8 @@ export class LlmWikiComponent {
   showApiKeyConfig = false;
   private _cachedApiKey: string | null = null;
   private _apiKeyLoaded = false;
+  private _streamingIdx = -1;
+  private _keepInputFocus = false;
 
   constructor(view: HomepageView) {
     this.view = view;
@@ -336,6 +435,7 @@ export class LlmWikiComponent {
   async render() {
     const card = this.view.containerEl.querySelector("#homepage-llmwiki-card");
     if (!card) return;
+    this.closeLinkPopup();
     card.innerHTML = `
       <div style="display:flex;flex-direction:column;width:100%;height:100%;background:var(--background-primary);border-radius:14px;overflow:hidden;">
         <div id="llmwiki-toolbar" style="
@@ -422,6 +522,9 @@ export class LlmWikiComponent {
             .llmwiki-activity {
               animation: llmwiki-pulse 1.5s ease-in-out infinite;
             }
+            .llmwiki-popup-btn:hover {
+              background: var(--background-modifier-hover) !important;
+            }
           </style>
           ${this.chatMessages.filter(m => m.role !== "activity").length === 0 ? `
             <div style="flex:1;display:flex;align-items:center;justify-content:center;color:var(--text-faint);font-size:13px;text-align:center;line-height:1.8;">
@@ -433,7 +536,8 @@ export class LlmWikiComponent {
                 ${!this.settings.lastMaintenance ? `<div style="margin-top:4px;font-size:11px;color:var(--text-muted);">💡 点击"维护"按钮开始构建知识库</div>` : ""}
               </div>
             </div>
-          ` : this.chatMessages.map(m => {
+          ` : this.chatMessages.map((m, idx) => {
+            const isStreaming = this._streamingIdx === idx;
             if (m.role === "activity") {
               return `
               <div class="llmwiki-activity" style="display:flex;align-items:center;gap:8px;padding:4px 0;">
@@ -452,13 +556,13 @@ export class LlmWikiComponent {
                 font-size:14px;
                 background:${m.role === "user" ? "var(--interactive-accent)" : "var(--background-modifier-hover)"};
               ">${m.role === "user" ? "👤" : "🤖"}</div>
-              <div style="
+              <div${isStreaming ? ' id="llmwiki-streaming"' : ""} style="
                 max-width:75%;padding:8px 12px;border-radius:10px;
                 font-size:13px;line-height:1.5;word-break:break-word;
                 background:${m.role === "user" ? "var(--interactive-accent)" : "var(--background-modifier-hover)"};
                 color:${m.role === "user" ? "var(--text-on-accent)" : "var(--text-normal)"};
                 border-radius:${m.role === "user" ? "10px 10px 4px 10px" : "10px 10px 10px 4px"};
-              ">${this.formatMessage(m.content)}</div>
+              ">${isStreaming ? escapeHtml(m.content) : this.formatMessage(m.content)}</div>
             </div>`;
           }).join("")}
         </div>
@@ -486,6 +590,20 @@ export class LlmWikiComponent {
 
     this.bindEvents();
     this.scrollChatToBottom();
+    if (this._keepInputFocus) {
+      this._keepInputFocus = false;
+      this.refocusInput();
+    }
+  }
+
+  private refocusInput() {
+    const input = this.view.containerEl.querySelector("#llmwiki-chat-input") as HTMLInputElement;
+    if (input) {
+      input.focus();
+      // Move cursor to end of text
+      const len = input.value.length;
+      input.setSelectionRange(len, len);
+    }
   }
 
   private bindEvents() {
@@ -559,6 +677,81 @@ export class LlmWikiComponent {
         this.handleSend();
       }
     });
+
+    // Delegated click for links in chat messages
+    const chatEl = card.querySelector("#llmwiki-chat") as HTMLElement;
+    chatEl?.addEventListener("click", (e) => {
+      const link = (e.target as HTMLElement).closest(".llmwiki-link") as HTMLElement | null;
+      if (!link) { this.closeLinkPopup(); return; }
+      e.preventDefault();
+      e.stopPropagation();
+      const url = link.dataset.url || "";
+      this.showLinkPopup(link, url);
+    });
+    // Close popup on outside click (skip clicks on links or inside popup)
+    document.addEventListener("click", (e) => {
+      const target = e.target as HTMLElement;
+      if (target.closest(".llmwiki-link") || target.closest("#llmwiki-link-popup")) return;
+      this.closeLinkPopup();
+    });
+  }
+
+  private showLinkPopup(anchor: HTMLElement, url: string) {
+    // Remove any existing popup
+    this.closeLinkPopup();
+    const popup = document.createElement("div");
+    popup.id = "llmwiki-link-popup";
+    const rect = anchor.getBoundingClientRect();
+    popup.style.cssText = `
+      position:fixed;z-index:9999;
+      left:${rect.left}px;top:${rect.bottom + 4}px;
+      background:var(--background-primary);
+      border:1px solid var(--background-modifier-border);
+      border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,0.18);
+      display:flex;flex-direction:column;padding:4px;
+      min-width:150px;
+    `;
+    popup.innerHTML = `
+      <button class="llmwiki-popup-btn" data-action="copy" style="
+        padding:6px 12px;border:none;background:transparent;color:var(--text-normal);
+        cursor:pointer;text-align:left;border-radius:4px;font-size:13px;font-family:inherit;
+        display:flex;align-items:center;gap:8px;
+      ">📋 复制链接</button>
+      <button class="llmwiki-popup-btn" data-action="open" style="
+        padding:6px 12px;border:none;background:transparent;color:var(--text-normal);
+        cursor:pointer;text-align:left;border-radius:4px;font-size:13px;font-family:inherit;
+        display:flex;align-items:center;gap:8px;
+      ">🌐 在浏览器中打开</button>
+    `;
+    document.body.appendChild(popup);
+
+    popup.querySelector("[data-action=copy]")?.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(url);
+      } catch {
+        // fallback for older Electron
+        const ta = document.createElement("textarea");
+        ta.value = url; ta.style.position = "fixed"; ta.style.opacity = "0";
+        document.body.appendChild(ta); ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      }
+      this.closeLinkPopup();
+    });
+    popup.querySelector("[data-action=open]")?.addEventListener("click", () => {
+      window.open(url, "_blank");
+      this.closeLinkPopup();
+    });
+
+    // Keep popup in viewport
+    const popRect = popup.getBoundingClientRect();
+    if (popRect.right > window.innerWidth - 8) popup.style.left = `${window.innerWidth - popRect.width - 8}px`;
+    if (popRect.bottom > window.innerHeight - 8) popup.style.top = `${rect.top - popRect.height - 4}px`;
+  }
+
+  private closeLinkPopup() {
+    const existing = document.getElementById("llmwiki-link-popup");
+    if (existing) existing.remove();
   }
 
   private formatMessage(content: string): string {
@@ -661,8 +854,8 @@ export class LlmWikiComponent {
     html = out.join("\n");
 
     // Phase 3: Inline elements
-    // Links
-    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" style="color:var(--interactive-accent);text-decoration:none;">$1</a>');
+    // Links — use data-url to intercept clicks
+    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<span class="llmwiki-link" data-url="$2" style="color:var(--interactive-accent);text-decoration:underline;cursor:pointer;">$1</span>');
     // Bold
     html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
     // Italic
@@ -687,18 +880,19 @@ export class LlmWikiComponent {
 
     const ts = Date.now();
     this.chatMessages.push({ role: "user", content: text, timestamp: ts });
+    this._keepInputFocus = true;
     this.render();
 
     try {
       const wikiContext = await this.searchWiki(text);
       const response = await this.agentLoop(text, wikiContext);
-      // agentLoop always pushes the final assistant message; just ensure activities are clean
       this.clearActivity();
       await this.appendChatLog(text, response);
     } catch (e: any) {
       this.clearActivity();
       this.chatMessages.push({ role: "assistant", content: `❌ 错误: ${e.message}`, timestamp: ts });
     }
+    this._keepInputFocus = true;
     this.render();
   }
 
@@ -711,91 +905,86 @@ export class LlmWikiComponent {
   private addActivity(text: string) {
     this.clearActivity();
     this.chatMessages.push({ role: "activity", content: text, timestamp: Date.now() });
+    this._keepInputFocus = true;
     this.render();
   }
 
   private async agentLoop(userText: string, wikiContext: string): Promise<string> {
     const messages = this.buildChatMessages(userText, wikiContext);
-    const maxRounds = 5;
-    let streamedPreamble = ""; // streaming text accumulated, prepended to final answer
 
+    // Step 1: Determine if tools are needed (non-streaming, quick)
     this.addActivity("🤔 正在分析你的问题...");
+    const probeResp = await this.callDeepSeekWithTools(messages);
+    const probeChoice = probeResp.choices?.[0];
+    if (!probeChoice) throw new Error("API 返回空响应");
+    const toolCalls = probeChoice.message?.tool_calls ?? [];
+    const probeText = probeChoice.message?.content ?? "";
 
-    for (let round = 0; round < maxRounds; round++) {
-      let responseContent: string;
-      let toolCalls: any[];
+    this.clearActivity();
 
-      if (round === 0) {
-        // First round: streaming for real-time display
-        const result = await this.callDeepSeekStream(messages, true, (content) => {
-          if (!streamedPreamble) this.clearActivity();
-          streamedPreamble = content;
-          // Show live preview as activity (no avatar) until we know if tools are used
-          const last = this.chatMessages[this.chatMessages.length - 1];
-          if (last && last.role === "activity") {
-            last.content = content;
-          } else {
-            this.chatMessages.push({ role: "activity", content, timestamp: Date.now() });
-          }
-          this.render();
-        });
-
-        responseContent = result.content;
-        toolCalls = result.tool_calls;
-      } else {
-        // Subsequent rounds: non-streaming (tool execution context)
-        const data = await this.callDeepSeekWithTools(messages);
-        const choice = data.choices?.[0];
-        if (!choice) throw new Error("API 返回空响应");
-        responseContent = choice.message?.content ?? "";
-        toolCalls = choice.message?.tool_calls ?? [];
-      }
-
-      // No tool calls — final response
-      // Prepend preamble so it appears inline with the answer (single message, one avatar)
-      if (!toolCalls || toolCalls.length === 0) {
-        this.clearActivity();
-        const finalContent = (streamedPreamble && streamedPreamble !== responseContent)
-          ? streamedPreamble + "\n\n" + (responseContent || "")
-          : (responseContent || streamedPreamble || "(空响应)");
-        this.chatMessages.push({ role: "assistant", content: finalContent, timestamp: Date.now() });
-        return finalContent;
-      }
-
-      // streamedPreamble is kept and prepended to the final answer in the next round
-
+    if (toolCalls.length > 0) {
+      // ── Tools path: execute tools, then stream final answer ──
       messages.push({
         role: "assistant",
-        content: responseContent,
+        content: probeText,
         tool_calls: toolCalls,
       });
 
       for (const tc of toolCalls) {
-        const toolName = tc.function.name;
         let args: Record<string, any> = {};
-        try {
-          args = JSON.parse(tc.function.arguments || "{}");
-        } catch { /* keep empty args */ }
-
-        const argsStr = this.formatToolArgs(toolName, args);
-        this.addActivity(`🔧 正在调用 ${toolName}${argsStr}...`);
-
-        const result = executeTool(toolName, args, this.view);
-
-        const summary = this.summarizeToolResult(toolName, result);
+        try { args = JSON.parse(tc.function.arguments || "{}"); } catch { /* */ }
+        const argsStr = this.formatToolArgs(tc.function.name, args);
+        this.addActivity(`🔧 正在调用 ${tc.function.name}${argsStr}...`);
+        const result = await executeTool(tc.function.name, args, this.view);
+        const summary = this.summarizeToolResult(tc.function.name, result);
         this.addActivity(`✅ ${summary}`);
-
         await this.delay(300);
-
-        messages.push({
-          role: "tool",
-          tool_call_id: tc.id,
-          content: result,
-        });
+        messages.push({ role: "tool", tool_call_id: tc.id, content: result });
       }
+
+      // Stream final answer (no tools needed — tool results are already in context)
+      this.clearActivity();
+      return this.streamResponse(messages);
     }
 
-    return "已达到最大工具调用轮次，请重试。";
+    // ── No-tools path: stream directly into assistant bubble ──
+    return this.streamResponse(messages);
+  }
+
+  private async streamResponse(messages: any[]): Promise<string> {
+    this.chatMessages.push({ role: "assistant", content: "", timestamp: Date.now() });
+    this._streamingIdx = this.chatMessages.length - 1;
+    this._keepInputFocus = true;
+    this.render();
+
+    let rafId = 0;
+    let fullContent = "";
+    const result = await this.callDeepSeekStream(messages, false, (content) => {
+      fullContent = content;
+      const msg = this.chatMessages[this._streamingIdx];
+      if (msg) msg.content = content;
+      if (rafId) cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(() => {
+        const el = this.view.containerEl.querySelector("#llmwiki-streaming");
+        if (el) {
+          el.innerHTML = this.formatMessage(content);
+          const chat = this.view.containerEl.querySelector("#llmwiki-chat");
+          if (chat) chat.scrollTop = chat.scrollHeight;
+        }
+      });
+    });
+
+    if (rafId) {
+      await new Promise<void>(resolve => {
+        cancelAnimationFrame(rafId);
+        rafId = requestAnimationFrame(() => resolve());
+      });
+    }
+
+    this._streamingIdx = -1;
+    const msg = this.chatMessages[this.chatMessages.length - 1];
+    if (msg && msg.role === "assistant") msg.content = fullContent || result.content;
+    return fullContent || result.content;
   }
 
   private formatToolArgs(_name: string, args: Record<string, any>): string {
@@ -816,6 +1005,8 @@ export class LlmWikiComponent {
           return `待办统计: 共 ${obj.overview.totalCount} 条，完成率 ${obj.overview.completionRate}%`;
         case "add_todos":
           return `已添加 ${obj.count} 条待办 (${obj.dateDisplay})`;
+        case "web_search":
+          return `搜索 "${obj.query}" 返回 ${obj.resultCount} 条结果`;
         default:
           return "工具执行完成";
       }
@@ -838,6 +1029,7 @@ export class LlmWikiComponent {
 - get_todos: 查询待办事项，可按日期、状态、优先级筛选。当用户问"我的待办"、"昨天的待办"、"未完成的事"时必须使用。
 - get_todo_stats: 获取待办统计概览。当用户问"完成率"、"整体待办情况"时使用。
 - add_todos: 添加待办事项到指定日期。需要提供 date（YYYY-MM-DD 格式）和 todos 数组。用户说"帮我安排明天的任务"、"添加周五的待办"、"下周一的待办"时使用。根据当前时间计算出目标日期后调用。每个待办可指定内容、优先级（高/中高/中/低）、时间范围。
+- web_search: 搜索互联网获取实时信息。当知识库无法回答用户的问题、需要最新资讯或事实性信息时使用。参数 query（搜索关键词），可选 num_results（默认5）。返回结果含 url 字段，回答时必须附带来源链接。
 
 ## 待办优先级颜色
 - 高: #e53935 (红色)
@@ -858,7 +1050,8 @@ ${wikiContext || "（知识库为空或未找到相关内容）"}
 6. 当用户问到时间/日期相关问题时，主动使用 get_current_time 工具
 7. 当用户问到待办/日程/任务相关问题时，必须使用 get_todos 或 get_todo_stats 工具查询实时数据
 8. 当用户要求添加/安排/创建待办事项时，使用 add_todos 工具，根据当前时间计算出目标日期（YYYY-MM-DD），优先级的默认值为"中"
-9. 绝对不要使用 Markdown 表格（表格渲染有 bug）。用列表、分段文字或其他格式替代表格展示数据`;
+9. 当知识库无法回答用户问题、用户询问最新信息/实时资讯、或用户明确要求搜索时，使用 web_search 工具。**关键：搜索结果的每条信息后面必须附带来源链接**，格式为 "- 信息内容 [来源标题](url)" 或 "根据 [来源标题](url)，..."。禁止只给搜索结果文本而不给链接。
+10. 绝对不要使用 Markdown 表格（表格渲染有 bug）。用列表、分段文字或其他格式替代表格展示数据`;
 
     const history = this.chatMessages.slice(-10).map(m => ({
       role: m.role,
@@ -1530,6 +1723,7 @@ type: profile
     const toolCalls: Map<number, { id: string; name: string; arguments: string }> = new Map();
     let buffer = "";
 
+    let lastPaint = 0;
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -1538,6 +1732,7 @@ type: profile
       const lines = buffer.split("\n");
       buffer = lines.pop() || "";
 
+      let hasContent = false;
       for (const line of lines) {
         const trimmed = line.trim();
         if (!trimmed || !trimmed.startsWith("data: ")) continue;
@@ -1552,7 +1747,7 @@ type: profile
           // Content delta
           if (delta.content) {
             content += delta.content;
-            onContent(content);
+            hasContent = true;
           }
 
           // Tool call deltas
@@ -1570,6 +1765,17 @@ type: profile
           }
         } catch {
           // skip malformed chunks
+        }
+      }
+
+      // Fire callback with accumulated content, then yield for DOM repaint
+      if (hasContent) {
+        onContent(content);
+        // Yield to event loop at most every 50ms so browser can repaint
+        const now = Date.now();
+        if (now - lastPaint > 50) {
+          lastPaint = now;
+          await new Promise(r => setTimeout(r, 0));
         }
       }
     }

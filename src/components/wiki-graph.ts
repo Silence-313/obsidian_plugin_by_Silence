@@ -45,8 +45,8 @@ export class WikiGraphComponent {
   private offsetY = 0;
   private scale = 1;
   private dragging: string | null = null;
-  private dragStartX = 0;
-  private dragStartY = 0;
+  private dragOffsetX = 0;
+  private dragOffsetY = 0;
   private dragMoved = false;
   private hovering: string | null = null;
   private animFrame = 0;
@@ -357,7 +357,7 @@ export class WikiGraphComponent {
   private _settled = false;
 
   private tick = () => {
-    const active = this.simulationFrames < this.MAX_SIM_FRAMES && !this.dragging;
+    const active = this.simulationFrames < this.MAX_SIM_FRAMES;
     if (active) {
       this.applyForces();
       this.simulationFrames++;
@@ -395,21 +395,22 @@ export class WikiGraphComponent {
         const d2 = dx * dx + dy * dy;
         const dist = Math.sqrt(d2);
         if (dist < this.s) {
-          // Nudge apart if overlapping
-          a.x -= this.s; b.x += this.s;
+          // Nudge apart if overlapping (skip if either is dragged)
+          if (a.id !== this.dragging) a.x -= this.s;
+          if (b.id !== this.dragging) b.x += this.s;
           continue;
         }
         const f = (k * k) / dist * strength;
         const fx = (dx / dist) * f;
         const fy = (dy / dist) * f;
-        a.vx -= fx;
-        a.vy -= fy;
-        b.vx += fx;
-        b.vy += fy;
+        if (a.id !== this.dragging) { a.vx -= fx; a.vy -= fy; }
+        if (b.id !== this.dragging) { b.vx += fx; b.vy += fy; }
       }
     }
 
     // Attraction (edges) — Hooke-like, grows with distance
+    const isDraggedEdge = (aId: string, bId: string) =>
+      aId === this.dragging || bId === this.dragging;
     for (const e of this.edges) {
       const a = this.nodeMap.get(e.source);
       const b = this.nodeMap.get(e.target);
@@ -418,7 +419,8 @@ export class WikiGraphComponent {
       const dy = b.y - a.y;
       const dist = Math.sqrt(dx * dx + dy * dy);
       if (dist < 1) continue;
-      const f = (dist * dist) / k * strength;
+      const dragBoost = isDraggedEdge(e.source, e.target) ? 4 : 1;
+      const f = (dist * dist) / k * strength * dragBoost;
       const fx = (dx / dist) * f;
       const fy = (dy / dist) * f;
       a.vx += fx;
@@ -432,6 +434,7 @@ export class WikiGraphComponent {
     const cy = this.cardH / 2 + 30;
     const maxSpeed = 10 * this.s; // prevent runaway nodes, scale with viewport
     for (const node of this.nodes) {
+      if (node.id === this.dragging) continue; // dragged node locked to cursor
       // Stronger center pull
       const dxc = cx - node.x;
       const dyc = cy - node.y;
@@ -603,8 +606,8 @@ export class WikiGraphComponent {
 
     if (hit) {
       this.dragging = hit.id;
-      this.dragStartX = hit.x;
-      this.dragStartY = hit.y;
+      this.dragOffsetX = hit.x - world.x;
+      this.dragOffsetY = hit.y - world.y;
       this.dragMoved = false;
       this.wakeSimulation();
       (this.canvas.style as any).cursor = "grabbing";
@@ -625,19 +628,19 @@ export class WikiGraphComponent {
     if (this.dragging) {
       const node = this.nodeMap.get(this.dragging);
       if (node) {
-        const dx = world.x - this.dragStartX;
-        const dy = world.y - this.dragStartY;
+        const newX = world.x + this.dragOffsetX;
+        const newY = world.y + this.dragOffsetY;
+        const dx = newX - node.x;
+        const dy = newY - node.y;
         if (Math.abs(dx) > 1 || Math.abs(dy) > 1) this.dragMoved = true;
         const padX = node.radius + 4;
         const padTop = node.radius + 60;
         const padBottom = node.radius + 4;
-        node.x = Math.max(padX, Math.min(this.cardW - padX, world.x));
-        node.y = Math.max(padTop, Math.min(this.cardH - padBottom, world.y));
+        node.x = Math.max(padX, Math.min(this.cardW - padX, newX));
+        node.y = Math.max(padTop, Math.min(this.cardH - padBottom, newY));
         node.vx = 0;
         node.vy = 0;
-        this.dragStartX = world.x;
-        this.dragStartY = world.y;
-        this.simulationFrames = this.MAX_SIM_FRAMES; // pause sim while dragging
+        this.simulationFrames = 0; // keep sim alive so neighbors follow
       }
     } else if (this.panning) {
       this.offsetX = this.panStartOffX + (e.clientX - this.panStartX);

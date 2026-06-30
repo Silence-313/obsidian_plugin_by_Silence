@@ -613,6 +613,7 @@ export default class HomepageView extends ItemView {
 
   isInteractiveTarget(target: HTMLElement): boolean {
     if (target.closest("button, input, select, textarea")) return true;
+    if (target.closest("canvas, .llmwiki-link")) return true;
     if (target.closest(".calendar-day, .todo-check, .todo-delete, .todo-filter-chip, .yesterday-sync-one, .yesterday-sync-all")) return true;
     if (target.closest(".timer-picker-wrap")) return true;
     if (target.closest(".desktop-item")) return true;
