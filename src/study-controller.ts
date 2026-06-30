@@ -61,7 +61,7 @@ export class StudyController {
     const iframe = view.getIframe();
     if (!iframe) { new Notice("没有可截图的页面"); return; }
 
-    const currentUrl = (view as any).currentUrl || "";
+    const currentUrl = view.getCurrentUrl();
     const mdLeaves = this.plugin.app.workspace.getLeavesOfType("markdown");
     const markdownView = mdLeaves.length > 0 ? (mdLeaves[0].view as MarkdownView) : null;
 

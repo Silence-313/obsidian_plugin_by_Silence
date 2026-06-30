@@ -274,10 +274,11 @@ export class DesktopComponent {
 
     const menu = document.createElement("div");
     menu.id = "desktop-context-menu";
+    // Render off-screen first to measure, then clamp to viewport
     menu.style.cssText = `
       position: fixed;
-      left: ${x}px;
-      top: ${y}px;
+      left: -9999px;
+      top: -9999px;
       z-index: 1000;
       background: var(--background-primary);
       border: 1px solid var(--background-modifier-border);
@@ -287,6 +288,7 @@ export class DesktopComponent {
       min-width: 140px;
       font-family: inherit;
       font-size: 13px;
+      visibility: hidden;
     `;
 
     const deleteBtn = document.createElement("div");
@@ -311,6 +313,15 @@ export class DesktopComponent {
 
     menu.appendChild(deleteBtn);
     document.body.appendChild(menu);
+
+    // Clamp position to viewport
+    const menuW = menu.offsetWidth;
+    const menuH = menu.offsetHeight;
+    const clampedX = Math.max(0, Math.min(x, window.innerWidth - menuW));
+    const clampedY = Math.max(0, Math.min(y, window.innerHeight - menuH));
+    menu.style.left = clampedX + "px";
+    menu.style.top = clampedY + "px";
+    menu.style.visibility = "visible";
 
     const close = (e: MouseEvent) => {
       if (!menu.contains(e.target as Node)) {

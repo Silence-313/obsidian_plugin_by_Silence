@@ -85,6 +85,8 @@ export default class StudyView extends ItemView {
   async onOpen() { this.render(); }
   async onClose() {}
 
+  getCurrentUrl(): string { return this.currentUrl; }
+
   getIframe(): HTMLIFrameElement | null {
     return this.contentEl.querySelector("#study-iframe") as HTMLIFrameElement | null;
   }
@@ -141,10 +143,6 @@ export default class StudyView extends ItemView {
       this.plugin.settings.studyMode.history = [...this.history];
       this.plugin.saveSettings().catch(console.error);
     }
-  }
-
-  async triggerScreenshot() {
-    await this.controller.captureScreenshot();
   }
 
   private toggleHistory() {
@@ -537,6 +535,8 @@ export default class StudyView extends ItemView {
 
   // ── Drag-select overlay ──
 
+  private selectionOverlayCleanup: (() => void) | null = null;
+
   private showSelectionOverlay() {
     // Remove any existing overlay
     this.hideSelectionOverlay();
@@ -683,6 +683,14 @@ export default class StudyView extends ItemView {
     wrapper.addEventListener("pointerup", onUp);
     wrapper.addEventListener("pointerleave", onUp);
 
+    // Store cleanup so hideSelectionOverlay can remove listeners
+    this.selectionOverlayCleanup = () => {
+      wrapper.removeEventListener("pointerdown", onDown);
+      wrapper.removeEventListener("pointermove", onMove);
+      wrapper.removeEventListener("pointerup", onUp);
+      wrapper.removeEventListener("pointerleave", onUp);
+    };
+
     // Key: Esc to cancel, Enter to capture
     let keyHandled = false;
     const onKey = (e: KeyboardEvent) => {
@@ -724,6 +732,10 @@ export default class StudyView extends ItemView {
   }
 
   private hideSelectionOverlay() {
+    if (this.selectionOverlayCleanup) {
+      this.selectionOverlayCleanup();
+      this.selectionOverlayCleanup = null;
+    }
     this.contentEl.querySelector("#study-select-backdrop")?.remove();
     this.contentEl.querySelector("#study-select-box")?.remove();
     this.contentEl.querySelector("#study-select-toolbar")?.remove();

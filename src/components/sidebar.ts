@@ -205,7 +205,6 @@ export class SidebarComponent {
         if (comp) {
           comp.added = !comp.added;
           this.view.plugin.saveSettings().catch(console.error);
-          this.render();
           this.view.render();
         }
       });
@@ -229,7 +228,6 @@ export class SidebarComponent {
         if (comp && comp.added !== (targetZone === "added")) {
           comp.added = targetZone === "added";
           this.view.plugin.saveSettings().catch(console.error);
-          this.render();
           this.view.render();
         }
       });

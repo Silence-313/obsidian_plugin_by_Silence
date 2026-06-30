@@ -101,6 +101,8 @@ export default class HomepagePlugin extends Plugin {
   async loadSettings() {
     const data = await this.loadData();
     this.settings = Object.assign({}, DEFAULT_SETTINGS, data);
+    // Deep-copy components so mutations don't leak into DEFAULT_COMPONENTS
+    this.settings.components = this.settings.components.map(c => ({ ...c }));
     for (const dc of DEFAULT_COMPONENTS) {
       if (!this.settings.components.some(c => c.id === dc.id)) {
         this.settings.components.push({ ...dc });
