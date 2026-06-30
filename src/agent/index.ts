@@ -17,6 +17,7 @@ export { DriftController, type CognitivePolicy, type CompressionSignal, type Dri
 export { StateMutationEngine, type StateMutation, MUTATION_PRIORITY } from "./core/state_mutation_engine";
 export { MutationQueue } from "./core/mutation_queue";
 export { type CognitiveState, type MemoryState, type ConceptGraphState, type ReasoningState, type FeedbackState, type PolicyState, createEmptyState } from "./core/cognitive_state";
+export { SkillRegistry, type Skill, type SkillContext, type SkillResult, type SkillExecutionRecord, createDefaultSkillRegistry } from "./skills";
 export { RouterTelemetry, type RoutingRecord, type ToolMetrics } from "./router_telemetry";
 export { RagFeedback, type RetrievalRecord, type DocumentWeight, type QueryCluster } from "./rag_feedback";
 export {

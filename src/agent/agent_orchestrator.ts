@@ -21,6 +21,7 @@ import { MutationQueue } from "./core/mutation_queue";
 import { StateMutationEngine } from "./core/state_mutation_engine";
 import { CognitiveState, createEmptyState } from "./core/cognitive_state";
 import { ToolDecisionPolicy, type ToolDecisionResult } from "./tools/tool_decision_policy";
+import { SkillRegistry, createDefaultSkillRegistry, type SkillResult } from "./skills";
 import { RouterTelemetry } from "./router_telemetry";
 import { RagFeedback } from "./rag_feedback";
 
@@ -175,6 +176,7 @@ export class AgentOrchestrator {
   private mutationQueue: MutationQueue;
   private mutationEngine: StateMutationEngine;
   private toolDecisionPolicy: ToolDecisionPolicy;
+  private skillRegistry: SkillRegistry;
   private lastReasoningResult: ReasoningResult | null = null;
   private routerTelemetry: RouterTelemetry;
   private ragFeedback: RagFeedback;
@@ -219,6 +221,7 @@ export class AgentOrchestrator {
       apiEndpoint: config.apiEndpoint,
       model: config.model,
     });
+    this.skillRegistry = createDefaultSkillRegistry();
     this.routerTelemetry = new RouterTelemetry();
     this.ragFeedback = new RagFeedback();
   }
@@ -340,9 +343,10 @@ export class AgentOrchestrator {
       onActivity?.("概念推理完成");
     }
 
-    // 3.5 Tool Decision Layer: LLM autonomously decides tool usage
+    // 3.5 Tool & Skill Decision Layer: LLM autonomously decides tool/skill usage
     let toolDecisionResult: ToolDecisionResult | null = null;
     let proactiveToolResult: string | null = null;
+    let proactiveSkillResult: SkillResult | null = null;
 
     try {
       const toolCtx = {
@@ -351,6 +355,7 @@ export class AgentOrchestrator {
         conceptContext: memoryContext.conceptReasoning,
         episodicContext: memoryContext.episodicContext,
         availableTools: ["web_search", "get_todos", "add_todos", "get_todo_stats", "get_current_time"],
+        availableSkills: this.skillRegistry.getAll(),
       };
 
       toolDecisionResult = await this.toolDecisionPolicy.decide(toolCtx);
@@ -413,6 +418,26 @@ export class AgentOrchestrator {
           rawResponse: toolDecisionResult.rawResponse,
           latencyMs: toolDecisionResult.latencyMs,
         }).catch(() => { /* best-effort log */ });
+
+        // Skill execution: if LLM decided to use a skill
+        if (toolDecisionResult.decision.use_skill && toolDecisionResult.decision.skill_name) {
+          const skillName = toolDecisionResult.decision.skill_name;
+          const skillArgs = toolDecisionResult.decision.query_rewrite
+            ? { path: toolDecisionResult.decision.query_rewrite }
+            : {};
+
+          onActivity?.(`自主执行技能: ${skillName}`);
+          proactiveSkillResult = await this.skillRegistry.execute(skillName, skillArgs, {
+            vault: this.config.vault,
+          });
+
+          // If skill result has useful data, add to tool calls for tracking
+          if (proactiveSkillResult.success) {
+            onActivity?.(`技能执行成功: ${skillName}`);
+          } else {
+            onActivity?.(`技能执行失败: ${proactiveSkillResult.error || "unknown"}`);
+          }
+        }
       }
     } catch (decisionError: any) {
       // Tool decision layer failure → fall through to existing router behavior
@@ -420,11 +445,16 @@ export class AgentOrchestrator {
     }
 
     // 4. Build enhanced system prompt (with reasoning context)
-    // If proactive tool was executed, inject result into system prompt
-    const toolResultContext = proactiveToolResult
+    // If proactive tool/skill was executed, inject result into system prompt
+    const toolResultSection = proactiveToolResult
       ? `\n## 工具执行结果\n工具 "${toolDecisionResult?.decision.tool_name}" 的执行结果:\n${proactiveToolResult.substring(0, 800)}\n`
       : "";
-    const systemPrompt = this.buildSystemPrompt(memoryContext) + toolResultContext;
+    const skillResultSection = proactiveSkillResult?.success
+      ? `\n## 技能执行结果\n技能 "${toolDecisionResult?.decision.skill_name}" 的执行结果:\n${JSON.stringify(proactiveSkillResult.data).substring(0, 800)}\n`
+      : (proactiveSkillResult && !proactiveSkillResult.success
+        ? `\n## 技能执行失败\n${proactiveSkillResult.error}\n`
+        : "");
+    const systemPrompt = this.buildSystemPrompt(memoryContext) + toolResultSection + skillResultSection;
 
     // 5. Build messages for LLM
     const messages = this.buildLLMMessages(systemPrompt, chatHistory, sanitizedText);
