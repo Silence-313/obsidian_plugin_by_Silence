@@ -36,10 +36,13 @@ const VIDEO_PLATFORMS: VideoPlatform[] = [
     toEmbed: (url) => {
       const bvMatch = url.match(/(BV[a-zA-Z0-9]+)/);
       if (!bvMatch) return url;
-      let embed = `https://player.bilibili.com/player.html?bvid=${bvMatch[1]}`;
+      let embed = `https://player.bilibili.com/player.html?bvid=${bvMatch[1]}&as_wide=1&high_quality=1&danmaku=0`;
       // preserve page number
       const pMatch = url.match(/[?&]p=(\d+)/i);
       if (pMatch) embed += `&page=${pMatch[1]}`;
+      // preserve timestamp
+      const tMatch = url.match(/[?&]t=(\d+)/i);
+      if (tMatch) embed += `&t=${tMatch[1]}`;
       return embed;
     },
   },
@@ -366,11 +369,6 @@ export default class StudyView extends ItemView {
     `;
     errNotice.innerHTML = `
       <div style="font-size: 14px; color: var(--text-muted);">该页面不允许嵌入显示</div>
-      <button id="study-error-open" style="
-        background: var(--interactive-accent); color: var(--text-on-accent);
-        border: none; border-radius: 6px; cursor: pointer;
-        font-size: 13px; padding: 8px 18px; font-family: inherit;
-      ">用默认浏览器打开</button>
     `;
     wrapper.appendChild(errNotice);
 
@@ -378,8 +376,9 @@ export default class StudyView extends ItemView {
     const iframe = document.createElement("iframe");
     iframe.id = "study-iframe";
     iframe.style.cssText = "width: 100%; height: 100%; border: none;";
-    iframe.setAttribute("sandbox", "allow-scripts allow-same-origin allow-forms allow-popups allow-presentation");
+    iframe.setAttribute("sandbox", "allow-scripts allow-same-origin allow-forms allow-presentation");
     iframe.setAttribute("allow", "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen");
+    iframe.setAttribute("referrerpolicy", "origin");
     iframe.setAttribute("allowfullscreen", "");
     // Load current URL if any (with embed conversion)
     if (this.currentUrl) {
@@ -482,10 +481,6 @@ export default class StudyView extends ItemView {
       ht.addEventListener("mouseleave", () => { ht.style.background = ""; });
     });
 
-    // Error fallback button
-    this.contentEl.querySelector("#study-error-open")?.addEventListener("click", () => {
-      if (this.currentUrl) window.open(this.currentUrl, "_blank");
-    });
 
     // iframe load handling
     iframe.addEventListener("load", () => {

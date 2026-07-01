@@ -6,24 +6,44 @@ import { AgentOrchestrator } from "../agent";
 
 const WIKI_SCHEMA = `# LLM Wiki Schema
 
-你是一个知识库维护者。你的任务是阅读用户的笔记，并维护一个结构化的 wiki。
+你是知识库维护者。任务是阅读用户笔记，维护结构化 wiki。
 
 ## Wiki 结构
 
-- index.md — 所有页面的目录，带链接和一行摘要
+- index.md — 知识库目录，按文件夹层级组织，引用概念枢纽
 - log.md — 按时间顺序记录所有操作
 - overview.md — 知识库总览
 - summaries/ — 每篇笔记的摘要
-- concepts/ — 跨笔记的概念页面
+- concepts/ — 文件夹概念枢纽页面 + 跨笔记概念
 
-## 规则
+## 核心规则
 
-1. 用户笔记是只读的，绝对不要修改
-2. 每个摘要页面要包含：来源文件名、关键要点、标签
-3. 概念页面要交叉引用相关的笔记和摘要
-4. 每次操作后更新 index.md 和 log.md
-5. 发现矛盾或不一致时记录到 log.md
-6. 所有页面用中文撰写`;
+### 1. 文件夹层级拓扑
+知识图谱连接规则：index → 文件夹 → 内容，单向 DAG，不可成环。
+- 每个文件夹对应一个概念枢纽页面（concepts/<文件夹名>.md）
+- index.md 连接各文件夹枢纽，不直接连接具体文件
+- 文件夹枢纽连接该文件夹下所有源笔记和摘要
+
+### 2. 摘要生成
+- 每篇笔记生成一个摘要，存储在 summaries/<文件名>.md
+- YAML frontmatter 含 source（源路径）、source-mtime（文件修改时间戳）、date、tags
+- 内容包含：关键要点、详细摘要、相关概念
+- 「相关概念」中引用所属文件夹枢纽
+- 用 source-mtime 比对实现增量更新，跳过未变更文件
+
+### 3. 概念枢纽
+- 每个文件夹（≥2 文件）自动创建概念枢纽页面
+- 枢纽作为文件夹的内容聚合点和图谱中心节点
+
+### 4. 增量维护
+- 维护前先检查 source-mtime，跳过未变更文件
+- 只对新增或修改的文件调用 LLM 生成摘要
+- 不重复读取已处理过的源文件内容
+
+### 5. 用户笔记只读
+- 绝不修改 summaries/、concepts/、index.md 以外的任何文件
+- 发现矛盾或不一致记录到 log.md
+- 所有页面用中文撰写`;
 
 export class LlmWikiComponent {
   view: HomepageView;
@@ -771,32 +791,31 @@ export class LlmWikiComponent {
       for (const file of noteFiles) {
         processed++;
         this.buildProgress = `处理笔记 ${processed}/${total}: ${file.name}`;
-        this.addBuildLog(`[${processed}/${total}] 读取: ${file.path}`);
+        this.addBuildLog(`[${processed}/${total}] ${file.path}`);
         this.render();
 
         try {
-          const content = await vault.read(file);
-          if (content.trim().length === 0) {
-            this.addBuildLog(`  跳过(空文件): ${file.name}`);
-            continue;
-          }
-
           const summaryPath = `${wikiFolder}/summaries/${this.sanitizeFileName(file.name)}`;
-          const existingSummary = allFiles.some(f => f.path === summaryPath);
+          const existingSummaryFile = allFiles.find(f => f.path === summaryPath);
 
-          if (existingSummary) {
-            const existingFile = allFiles.find(f => f.path === summaryPath)!;
-            const existingStat = await vault.read(existingFile);
-            if (existingStat.includes(`source-mtime: ${file.stat.mtime}`)) {
-              this.addBuildLog(`  跳过(未变更): ${file.name}`);
+          // Check mtime BEFORE reading full source — skip unchanged files
+          if (existingSummaryFile) {
+            const frontMatter = await vault.read(existingSummaryFile);
+            if (frontMatter.includes(`source-mtime: ${file.stat.mtime}`)) {
+              this.addBuildLog(`  跳过(未变更)`);
               continue;
             }
           }
 
-          const summary = await this.generateSummary(file.path, content);
-          if (existingSummary) {
-            const existingFile = allFiles.find(f => f.path === summaryPath)!;
-            await vault.modify(existingFile, summary);
+          const content = await vault.read(file);
+          if (content.trim().length === 0) {
+            this.addBuildLog(`  跳过(空文件)`);
+            continue;
+          }
+
+          const summary = await this.generateSummary(file.path, content, file.stat.mtime);
+          if (existingSummaryFile) {
+            await vault.modify(existingSummaryFile, summary);
           } else {
             await vault.create(summaryPath, summary);
           }
@@ -809,6 +828,15 @@ export class LlmWikiComponent {
           await this.delay(500);
         }
       }
+
+      // Create topic hub nodes — group summaries by source directory,
+      // create concept hub pages that link all related pages together,
+      // and update summaries to reference their hub
+      this.buildProgress = "创建主题枢纽节点...";
+      this.addBuildLog("创建主题枢纽节点 ...");
+      this.render();
+      await this.createTopicHubs(wikiFolder, noteFiles);
+      this.addBuildLog("  ✅ 主题枢纽节点已创建");
 
       // Generate index
       this.buildProgress = "生成索引...";
@@ -961,16 +989,119 @@ ${dateDetails}
 ${pendingList}`;
   }
 
+  // ── Topic Hub Creation ───────────────────────────────────
+
+  private async createTopicHubs(wikiFolder: string, noteFiles: any[]) {
+    const vault = this.view.plugin.app.vault;
+    const allFiles = vault.getFiles();
+
+    // Group notes by top-level source directory (e.g. "编译原理/")
+    const dirGroups: Map<string, Array<{ path: string; name: string }>> = new Map();
+    for (const f of noteFiles) {
+      const slashIdx = f.path.indexOf("/");
+      if (slashIdx === -1) continue; // root-level files, skip
+      const dir = f.path.substring(0, slashIdx);
+      if (!dirGroups.has(dir)) dirGroups.set(dir, new Array());
+      dirGroups.get(dir)!.push({ path: f.path, name: f.name.replace(/\.md$/, "") });
+    }
+
+    for (const [dir, files] of dirGroups) {
+      if (files.length < 2) continue; // skip single-file dirs
+
+      const hubName = dir;
+      const hubPath = `${wikiFolder}/concepts/${this.sanitizeFileName(hubName)}.md`;
+
+      const summaryPaths = files.map(f =>
+        `${wikiFolder}/summaries/${this.sanitizeFileName(f.name + ".md")}`
+      );
+
+      // Build source list and summary list for the hub page
+      const sourceList = files.map(f => `- [[${f.path}|${f.name}]]`).join("\n");
+      const summaryList = summaryPaths.map((sp, i) =>
+        `- [[${sp}|${files[i].name} 摘要]]`
+      ).join("\n");
+
+      try {
+        const hubContent = await this.generateHubPage(hubName, sourceList, summaryList, files.length);
+        const existingHub = allFiles.find(f => f.path === hubPath);
+        if (existingHub) {
+          await vault.modify(existingHub, hubContent);
+        } else {
+          await vault.create(hubPath, hubContent);
+        }
+        this.addBuildLog(`  ✅ 枢纽: ${hubName} (${files.length} 个文件)`);
+
+        // Update each summary to reference the hub
+        for (const sp of summaryPaths) {
+          const sf = allFiles.find(f => f.path === sp);
+          if (!sf) continue;
+          try {
+            let content = await vault.read(sf);
+            if (!content.includes(`[[${hubName}]]`)) {
+              if (content.includes("## 相关概念")) {
+                content = content.replace("## 相关概念", `## 相关概念\n- [[${hubName}]]`);
+              } else {
+                content += `\n## 相关概念\n- [[${hubName}]]\n`;
+              }
+              await vault.modify(sf, content);
+            }
+          } catch { /* skip unmodifiable */ }
+        }
+      } catch (e: any) {
+        this.addBuildLog(`  ⚠ 枢纽 ${hubName} 创建失败: ${e.message}`);
+      }
+    }
+  }
+
+  private async generateHubPage(hubName: string, sourceList: string, summaryList: string, fileCount: number): Promise<string> {
+    const today = new Date().toISOString().split("T")[0];
+    const systemPrompt = `你是知识库维护者。为"${hubName}"创建概念枢纽页面。
+
+这个页面作为知识图谱的中心枢纽节点，连接 index 和所有 ${hubName} 相关内容。
+
+格式：
+---
+date: ${today}
+tags: [${hubName}, 枢纽]
+---
+
+# ${hubName}
+
+## 概述
+（2-3句描述 ${hubName} 涵盖的主题范围）
+
+## 源笔记
+${sourceList}
+
+## Wiki 摘要
+${summaryList}
+
+## 核心概念
+（用 [[概念名]] 格式列出该主题下的核心概念，每个概念一行）
+
+规则：
+- 所有链接使用 [[完整路径|显示名]] 格式，路径含 .md 后缀
+- 中文撰写，简洁
+- 只输出页面内容`;
+
+    const messages = [
+      { role: "system" as const, content: systemPrompt },
+      { role: "user" as const, content: `为"${hubName}"主题创建枢纽页面，该主题下有 ${fileCount} 个文件。` },
+    ];
+
+    return this.callDeepSeek(messages);
+  }
+
   // ── LLM API helpers (used during buildWiki) ───────────────
 
-  private async generateSummary(filePath: string, content: string): Promise<string> {
+  private async generateSummary(filePath: string, content: string, fileMtime: number): Promise<string> {
     const truncated = content.length > 8000 ? content.substring(0, 8000) + "\n...(内容已截断)" : content;
     const systemPrompt = `你是知识库维护者。为以下笔记生成摘要页面。
 
 格式要求：
 ---
 source: ${filePath}
-source-mtime: ${Date.now()}
+source-mtime: ${fileMtime}
 date: ${new Date().toISOString().split("T")[0]}
 tags: [标签1, 标签2]
 ---
@@ -1007,7 +1138,50 @@ tags: [标签1, 标签2]
       } catch { /* skip */ }
     }
 
-    const systemPrompt = `你是知识库维护者。根据以下摘要文件列表，生成 index.md（知识库目录）。
+    // Build folder grouping info for the prompt
+    const folderGroups: Map<string, string[]> = new Map();
+    for (const s of summaries) {
+      try {
+        const c = await this.view.plugin.app.vault.read(s);
+        const srcMatch = c.match(/^source:\s*(.+)$/m);
+        if (srcMatch) {
+          const src = srcMatch[1].trim();
+          const slashIdx = src.indexOf("/");
+          const folder = slashIdx > -1 ? src.substring(0, slashIdx) : "(root)";
+          if (!folderGroups.has(folder)) folderGroups.set(folder, []);
+          folderGroups.get(folder)!.push(src);
+        }
+      } catch { /* skip */ }
+    }
+
+    // Build concept hub list
+    const refreshedAll = this.view.plugin.app.vault.getFiles();
+    const conceptFiles = refreshedAll.filter(f =>
+      f.path.startsWith(`${this.settings.wikiFolder}/concepts/`) && f.extension === "md"
+    );
+    const conceptList = conceptFiles.map(c => `- [[${c.path}|${c.name.replace(/\.md$/, "")}]]`).join("\n");
+
+    const folderEntries: string[] = [];
+    for (const [folder, files] of folderGroups) {
+      const conceptRef = conceptFiles.some(c => c.name.replace(/\.md$/, "") === folder)
+        ? `- 概念枢纽: [[${this.settings.wikiFolder}/concepts/${folder}.md|${folder}]]`
+        : "";
+      const fileItems = [...new Set(files)].sort().map(f =>
+        `- [[${f}|${f.split("/").pop()!.replace(/\.md$/, "")}]]`
+      ).join("\n");
+      folderEntries.push(`### 📁 ${folder}/ (${files.length} 个文件)\n${conceptRef}\n${fileItems}`);
+    }
+
+    const systemPrompt = `你是知识库维护者。生成 index.md（知识库目录）。
+
+## 核心规则：文件夹层级拓扑
+
+知识库按文件夹层级组织。图谱连接规则是 index → 文件夹 → 内容，不可成环。
+
+1. 每个文件夹作为独立主题分类
+2. 如果有对应的概念枢纽页面（concepts/ 目录下同名文件），用 [[路径|显示名]] 引用它
+3. 每个文件夹下列出该文件夹包含的所有笔记（用 [[完整路径|显示名]] 格式）
+4. 根目录文件单独列出
 
 格式:
 # 知识库目录
@@ -1015,27 +1189,28 @@ tags: [标签1, 标签2]
 ## 概述
 （一句话描述知识库覆盖的主题范围）
 
-## 按主题分类
+## 主题分类
 
-### 主题A
-- [[页面路径|页面名]] — 一行摘要
+### 📁 文件夹名/ (N 个文件)
+- 概念枢纽: [[llm-wiki/concepts/文件夹名|文件夹名]]
+- [[路径/文件名.md|显示名]]
 ...
 
-## 概念索引
-- [[概念1]] — 说明
-...
+### 根目录 (N 个文件)
+- [[文件名.md|显示名]]
 
 ## 统计
 - 总笔记数: X
-- 总摘要数: Y
+- 文件夹数: X
+- 概念数: X
 - 最后更新: ${new Date().toLocaleDateString("zh-CN")}
 
-只输出 index.md 内容，不要额外解释。`;
+只输出 index.md 内容。所有 wikilink 路径必须含 .md 后缀。`;
 
-    const summaryList = sampleSummaries.map(s => `### ${s.path}\n${s.firstLines}`).join("\n\n");
+    const folderContext = folderEntries.join("\n\n");
     const messages = [
       { role: "system" as const, content: systemPrompt },
-      { role: "user" as const, content: `摘要列表:\n\n${summaryList.substring(0, 8000)}` },
+      { role: "user" as const, content: `文件夹结构:\n\n${folderContext}\n\n概念页面:\n${conceptList}\n\n摘要预览:\n${sampleSummaries.map(s => `### ${s.path}\n${s.firstLines}`).join("\n\n").substring(0, 6000)}` },
     ];
 
     return this.callDeepSeek(messages);
@@ -1051,32 +1226,46 @@ tags: [标签1, 标签2]
     }
 
     const hasChatLog = chatLog.length > 100;
+
+    // Build folder summary
+    const folderMap = new Map<string, number>();
+    for (const f of noteFiles) {
+      const slashIdx = f.path.indexOf("/");
+      const folder = slashIdx > -1 ? f.path.substring(0, slashIdx) : "(root)";
+      folderMap.set(folder, (folderMap.get(folder) || 0) + 1);
+    }
+    const folderSummary = [...folderMap.entries()].map(([f, c]) => `- 📁 ${f}/ (${c} 篇)`).join("\n");
+
+    const conceptFiles = this.view.plugin.app.vault.getFiles().filter(f =>
+      f.path.startsWith(`${this.settings.wikiFolder}/concepts/`) && f.extension === "md"
+    );
+
     const systemPrompt = `你是知识库维护者。生成 overview.md（知识库总览）。
+
+知识库采用文件夹层级拓扑组织：index → 文件夹枢纽 → 内容，单向 DAG。
 
 格式:
 # 知识库总览
 
 ## 知识领域
-（基于笔记内容、待办数据和用户对话，列出主要知识领域和工作方向）
+（基于文件夹结构和笔记内容，列出主要知识领域）
+
+## 文件结构
+${folderSummary}
+- 概念枢纽: ${conceptFiles.length} 个
 
 ## 笔记概况
 - 总笔记数: ${noteFiles.length}
 - 总摘要数: ${summaries.length}
 ${hasChatLog ? "\n## 近期对话洞察\n（从最近的用户对话中提炼关键主题和关注点）" : ""}
 
-## 工作脉络
-（基于待办数据和对话记录，分析用户的工作模式、关注领域、完成趋势）
-
 ## 主题地图
-（融合笔记主题、待办项目和对话主题，描述各领域之间的关系）
-
-## 待探索方向
-（基于所有信息源，建议深入探索的方向）
+（描述各文件夹/领域之间的关系）
 
 ## 更新信息
 - 最后维护: ${new Date().toLocaleString("zh-CN")}
 
-只输出 overview.md 内容。`;
+中文撰写。只输出 overview.md 内容。`;
 
     const chatSection = hasChatLog ? `\n\n近期对话记录:\n${chatLog.substring(0, 5000)}` : "";
     const userContent = `摘要内容:\n\n${sampleSummaries.join("\n\n---\n\n").substring(0, 5000)}\n\n${todoData.substring(0, 3000)}${chatSection}`;

@@ -3,7 +3,7 @@ import type HomepageView from "../view";
 interface GraphNode {
   id: string;
   label: string;
-  type: "source" | "summary" | "concept" | "index";
+  type: "source" | "summary" | "concept" | "index" | "folder";
   path: string;
   x: number;
   y: number;
@@ -23,6 +23,7 @@ const NODE_COLORS: Record<GraphNode["type"], string> = {
   summary: "#27ae60",
   concept: "#3498db",
   index: "#9b59b6",
+  folder: "#e8c84c",
 };
 
 const NODE_BASE_RADII: Record<GraphNode["type"], number> = {
@@ -30,6 +31,7 @@ const NODE_BASE_RADII: Record<GraphNode["type"], number> = {
   summary: 5,
   concept: 6,
   index: 7,
+  folder: 7,
 };
 
 export class WikiGraphComponent {
@@ -130,7 +132,7 @@ export class WikiGraphComponent {
   }
 
   private typeLabel(type: GraphNode["type"]): string {
-    const labels: Record<string, string> = { source: "源笔记", summary: "摘要", concept: "概念", index: "索引" };
+    const labels: Record<string, string> = { source: "源笔记", summary: "摘要", concept: "概念", index: "索引", folder: "文件夹" };
     return labels[type] || type;
   }
 
@@ -178,6 +180,11 @@ export class WikiGraphComponent {
     this.simulationFrames = 0;
     this.MAX_SIM_FRAMES = 300;
     await this.parseWikiFiles();
+    // Remove isolated nodes (no connections)
+    this.nodes = this.nodes.filter(n => n.degree > 0);
+    this.edges = this.edges.filter(e => this.nodeMap.has(e.source) && this.nodeMap.has(e.target));
+    this.nodeMap.clear();
+    for (const n of this.nodes) this.nodeMap.set(n.id, n);
     this.initializePositions();
     this.offsetX = 0;
     this.offsetY = 0;
@@ -202,6 +209,33 @@ export class WikiGraphComponent {
 
     for (const f of sourceFiles) {
       this.addNode(f.path, f.name.replace(/\.md$/, ""), "source", f.path);
+    }
+
+    // Folder nodes — extract unique directory paths from source files,
+    // create folder nodes with parent→child and folder→file edges
+    const dirSet = new Set<string>();
+    for (const f of sourceFiles) {
+      const parts = f.path.split("/");
+      // Build all parent dirs: "a/b/c.md" → "a", "a/b"
+      for (let i = 1; i < parts.length; i++) {
+        dirSet.add(parts.slice(0, i).join("/"));
+      }
+    }
+    for (const dir of dirSet) {
+      const name = dir.split("/").pop()!;
+      this.addNode(`[dir]${dir}`, `📁 ${name}`, "folder", dir);
+      // Edge: folder → file (unidirectional, outward from folder)
+      for (const f of sourceFiles) {
+        const fDir = f.path.substring(0, f.path.lastIndexOf("/"));
+        if (fDir === dir) {
+          this.addEdge(`[dir]${dir}`, f.path);
+        }
+      }
+      // Edge: parent → child folder (unidirectional, top-down)
+      const parentDir = dir.substring(0, dir.lastIndexOf("/"));
+      if (parentDir && dirSet.has(parentDir)) {
+        this.addEdge(`[dir]${parentDir}`, `[dir]${dir}`);
+      }
     }
 
     // Wiki pages
@@ -235,16 +269,6 @@ export class WikiGraphComponent {
           }
         }
 
-        // For summaries: also link to source note via YAML frontmatter
-        if (f.path.startsWith(`${wikiFolder}/summaries/`)) {
-          const sourceMatch = content.match(/^source:\s*(.+)$/m);
-          if (sourceMatch) {
-            const sourcePath = sourceMatch[1].trim();
-            if (this.nodeMap.has(sourcePath)) {
-              this.addEdge(f.path, sourcePath);
-            }
-          }
-        }
 
         // For index: extract links from markdown link format too
         if (f.path === `${wikiFolder}/index.md` || f.path === `${wikiFolder}/overview.md`) {
@@ -261,15 +285,56 @@ export class WikiGraphComponent {
       }
     }
 
-    // Link summaries to source notes by name matching (summary file name ≈ source note name)
+    // ── Folder-centric topology: index → folders → sources/summaries/concepts ──
+
+    // For each summary, find its source file and the folder containing that source
+    const summarySourceFolder = new Map<string, string>(); // summaryPath → folderDir
     for (const f of wikiFiles) {
       if (!f.path.startsWith(`${wikiFolder}/summaries/`)) continue;
       const summaryName = f.name.replace(/\.md$/, "");
       for (const sf of sourceFiles) {
         if (sf.name.replace(/\.md$/, "") === summaryName) {
-          // Already handled above via YAML, but edge-safe since addEdge dedupes
-          if (f.path !== sf.path) this.addEdge(f.path, sf.path);
+          const fDir = sf.path.substring(0, sf.path.lastIndexOf("/"));
+          summarySourceFolder.set(f.path, fDir);
+          // Folder → summary edge
+          if (fDir && dirSet.has(fDir)) {
+            this.addEdge(`[dir]${fDir}`, f.path);
+          }
+          break;
         }
+      }
+    }
+
+    // Index → top-level folders
+    const indexPath = `${wikiFolder}/index.md`;
+    for (const dir of dirSet) {
+      if (!dir.includes("/")) {
+        this.addEdge(indexPath, `[dir]${dir}`);
+      }
+    }
+
+    // Folder → concepts: connect concept to folder if name matches
+    // or if the concept is referenced from summaries in that folder
+    for (const f of wikiFiles) {
+      if (!f.path.startsWith(`${wikiFolder}/concepts/`)) continue;
+      const conceptName = f.name.replace(/\.md$/, "");
+      // Match concept to folder by name
+      for (const dir of dirSet) {
+        const dirName = dir.split("/").pop()!;
+        if (dirName === conceptName) {
+          this.addEdge(`[dir]${dir}`, f.path);
+        }
+      }
+      // Also connect concept to folders whose summaries reference it
+      const conceptLink = `[[${conceptName}]]`;
+      for (const [sumPath, folderDir] of summarySourceFolder) {
+        if (!folderDir || !dirSet.has(folderDir)) continue;
+        try {
+          const sumContent = await vault.read(vault.getFiles().find(x => x.path === sumPath)!);
+          if (sumContent.includes(conceptLink) || sumContent.includes(`[[${conceptName}]]`)) {
+            this.addEdge(`[dir]${folderDir}`, f.path);
+          }
+        } catch { /* skip */ }
       }
     }
   }

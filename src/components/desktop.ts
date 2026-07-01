@@ -67,8 +67,9 @@ export class DesktopComponent {
     const backBtn = this.view.containerEl.querySelector(`#desktop-back-btn-${i}`) as HTMLElement;
     if (!grid) return;
 
-    const cur = this.currentPaths[i] ?? "";
+    let cur = this.currentPaths[i] ?? "";
     const root = this.view.plugin.settings.desktopFolders[i] ?? "";
+
     if (pathDisplay) pathDisplay.textContent = cur || "/";
     if (backBtn) {
       backBtn.style.display = cur !== root ? "inline-block" : "none";
@@ -87,8 +88,27 @@ export class DesktopComponent {
     `;
 
     try {
-      if (!this.view.app.vault.adapter) return;
+      if (!this.view.app.vault.adapter) {
+        grid.innerHTML = `
+          <div style="
+            grid-column: 1 / -1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100px;
+            color: var(--text-error);
+            font-size: 13px;
+          ">⚠️ 文件系统不可用</div>`;
+        return;
+      }
+      // empty string = vault root, which list() supports
       const result = await this.view.app.vault.adapter.list(cur);
+      // adapter.list() returns full paths relative to vault root.
+      // Extract just the name (last component) for display & navigation.
+      const toName = (fullPath: string) => {
+        const idx = fullPath.lastIndexOf("/");
+        return idx === -1 ? fullPath : fullPath.substring(idx + 1);
+      };
       const folders = [...result.folders].sort((a, b) => a.localeCompare(b));
       const files = [...result.files].sort((a, b) => a.localeCompare(b));
 
@@ -113,9 +133,11 @@ export class DesktopComponent {
       }
 
       grid.innerHTML =
-        folders.map((f) => this.renderItem(f, "folder")).join("") +
-        files.map((f) => this.renderItem(f, "file")).join("");
-    } catch {
+        folders.map((f) => this.renderItem(toName(f), "folder")).join("") +
+        files.map((f) => this.renderItem(toName(f), "file")).join("");
+    } catch (e) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      console.error(`Desktop: 无法访问 "${cur || "(vault 根目录)"}" — ${errMsg}`);
       grid.innerHTML = `
         <div style="
           grid-column: 1 / -1;
@@ -129,7 +151,8 @@ export class DesktopComponent {
           gap: 6px;
         ">
           <span style="font-size: 36px; opacity: 0.5;">⚠️</span>
-          <span>无法访问该文件夹</span>
+          <span>无法访问文件夹</span>
+          <span style="font-size: 10px; color: var(--text-faint);">${escapeHtml(cur || "(vault 根目录)")}</span>
         </div>
       `;
     }
