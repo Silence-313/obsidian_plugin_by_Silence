@@ -240,13 +240,22 @@ export class LlmWikiComponent {
                 font-size:14px;
                 background:${m.role === "user" ? "var(--interactive-accent)" : "var(--background-modifier-hover)"};
               ">${m.role === "user" ? "👤" : "🤖"}</div>
-              <div${isStreaming ? ' id="llmwiki-streaming"' : ""} style="
-                max-width:75%;padding:8px 12px;border-radius:10px;
-                font-size:13px;line-height:1.5;word-break:break-word;
-                background:${m.role === "user" ? "var(--interactive-accent)" : "var(--background-modifier-hover)"};
-                color:${m.role === "user" ? "var(--text-on-accent)" : "var(--text-normal)"};
-                border-radius:${m.role === "user" ? "10px 10px 4px 10px" : "10px 10px 10px 4px"};
-              ">${isStreaming ? escapeHtml(m.content) : this.formatMessage(m.content)}</div>
+              <div style="display:flex;flex-direction:column;max-width:75%;">
+                <div${isStreaming ? ' id="llmwiki-streaming"' : ""} style="
+                  padding:8px 12px;border-radius:10px;
+                  font-size:13px;line-height:1.5;word-break:break-word;
+                  background:${m.role === "user" ? "var(--interactive-accent)" : "var(--background-modifier-hover)"};
+                  color:${m.role === "user" ? "var(--text-on-accent)" : "var(--text-normal)"};
+                  border-radius:${m.role === "user" ? "10px 10px 4px 10px" : "10px 10px 10px 4px"};
+                ">${isStreaming ? escapeHtml(m.content) : this.formatMessage(m.content)}</div>
+                ${m.role === "assistant" && !isStreaming ? `
+                <button class="llmwiki-copy-btn" data-content="${escapeHtml(m.content).replace(/"/g, "&quot;")}" style="
+                  align-self:flex-start;margin-top:2px;
+                  padding:2px 8px;border:1px solid var(--background-modifier-border);
+                  border-radius:4px;background:transparent;color:var(--text-faint);
+                  cursor:pointer;font-size:11px;font-family:inherit;
+                ">📋 复制</button>` : ""}
+              </div>
             </div>`;
           }).join("")}
         </div>
@@ -363,9 +372,24 @@ export class LlmWikiComponent {
       }
     });
 
-    // Delegated click for links in chat messages
+    // Delegated click for links and copy buttons in chat messages
     const chatEl = card.querySelector("#llmwiki-chat") as HTMLElement;
     chatEl?.addEventListener("click", (e) => {
+      const target = e.target as HTMLElement;
+      const copyBtn = target.closest(".llmwiki-copy-btn") as HTMLElement | null;
+      if (copyBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        const content = copyBtn.dataset.content || "";
+        navigator.clipboard.writeText(content).then(() => {
+          copyBtn.textContent = "✅ 已复制";
+          setTimeout(() => { copyBtn.textContent = "📋 复制"; }, 1500);
+        }).catch(() => {
+          copyBtn.textContent = "❌ 失败";
+          setTimeout(() => { copyBtn.textContent = "📋 复制"; }, 1500);
+        });
+        return;
+      }
       const link = (e.target as HTMLElement).closest(".llmwiki-link") as HTMLElement | null;
       if (!link) { this.closeLinkPopup(); return; }
       e.preventDefault();
@@ -438,6 +462,42 @@ export class LlmWikiComponent {
   private formatMessage(content: string): string {
     let html = content
       .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+    // Phase 0: Strip markdown tables — convert to list format
+    // Tables render with bugs (content overlaps), so we detect and convert them.
+    html = html.replace(/\n(\|[^\n]+\|[\s\S]*?)(?=\n\n|\n(?!\|)|\n*$)/g, (tableBlock) => {
+      const lines = tableBlock.trim().split("\n").filter(l => l.trim());
+      if (lines.length < 2) return tableBlock; // need at least header + separator
+
+      // Check if it has a separator line (| --- | --- |)
+      const hasSeparator = lines.some(l => /^\|[\s:-]+\|/.test(l));
+      if (!hasSeparator) return tableBlock;
+
+      // Extract header and data rows
+      const dataLines = lines.filter(l => !/^\|[\s:-]+\|/.test(l));
+      if (dataLines.length === 0) return tableBlock;
+
+      const headerCells = dataLines[0].split("|").map(c => c.trim()).filter(c => c);
+      const rows = dataLines.slice(1).map(line =>
+        line.split("|").map(c => c.trim()).filter(c => c)
+      );
+
+      if (headerCells.length === 0) return tableBlock;
+
+      // Convert to list format
+      const out: string[] = [];
+      for (const row of rows) {
+        const parts: string[] = [];
+        for (let i = 0; i < Math.min(headerCells.length, row.length); i++) {
+          parts.push(`**${headerCells[i]}**: ${row[i]}`);
+        }
+        out.push(`- ${parts.join("，")}`);
+      }
+      return "\n" + out.join("\n") + "\n";
+    });
+
+    // Also strip any remaining separator-only lines (|---|...|) that weren't caught
+    html = html.replace(/\n\|[\s:-|]+\|\n/g, "\n");
 
     // Phase 1: Extract code blocks
     const codeBlocks: string[] = [];
@@ -566,6 +626,7 @@ export class LlmWikiComponent {
       // Add streaming assistant bubble
       this.chatMessages.push({ role: "assistant", content: "", timestamp: Date.now() });
       this._streamingIdx = this.chatMessages.length - 1;
+      this.render();
 
       const { response } = await orch.process(
         text,
@@ -616,6 +677,13 @@ export class LlmWikiComponent {
   }
 
   private clearActivity() {
+    // Adjust _streamingIdx for messages removed before it
+    if (this._streamingIdx >= 0) {
+      const removed = this.chatMessages
+        .slice(0, this._streamingIdx)
+        .filter(m => m.role === "activity").length;
+      this._streamingIdx -= removed;
+    }
     this.chatMessages = this.chatMessages.filter(m => m.role !== "activity");
   }
 

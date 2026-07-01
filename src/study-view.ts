@@ -98,7 +98,7 @@ export default class StudyView extends ItemView {
       if (normalized.includes(".") && !normalized.includes(" ")) {
         normalized = "https://" + normalized;
       } else {
-        normalized = "https://www.google.com/search?q=" + encodeURIComponent(normalized);
+        normalized = "https://www.bing.com/search?q=" + encodeURIComponent(normalized);
       }
     }
 
@@ -332,12 +332,12 @@ export default class StudyView extends ItemView {
         ">前往</button>
       </div>
       <div style="display: flex; gap: 16px; flex-wrap: wrap; justify-content: center; max-width: 480px; margin-bottom: 8px;">
-        ${this.renderQuickLink("YouTube", "https://www.youtube.com", "#FF0000")}
         ${this.renderQuickLink("Bilibili", "https://www.bilibili.com", "#FB7299")}
-        ${this.renderQuickLink("Vimeo", "https://vimeo.com", "#1AB7EA")}
-        ${this.renderQuickLink("Google", "https://www.google.com", "#4285F4")}
-        ${this.renderQuickLink("GitHub", "https://github.com", "#24292e")}
-        ${this.renderQuickLink("Wikipedia", "https://www.wikipedia.org", "#000000")}
+        ${this.renderQuickLink("Bing", "https://www.bing.com", "#008373")}
+        ${this.renderQuickLink("百度", "https://www.baidu.com", "#2932E1")}
+        ${this.renderQuickLink("知乎", "https://www.zhihu.com", "#0066FF")}
+        ${this.renderQuickLink("码云", "https://gitee.com", "#C71D23")}
+        ${this.renderQuickLink("百度百科", "https://baike.baidu.com", "#2468C0")}
       </div>
       <div style="font-size: 11px; color: var(--text-faint); margin-top: 16px;">
         视频网站会自动转为嵌入式播放器

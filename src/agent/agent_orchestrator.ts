@@ -156,6 +156,78 @@ const AGENT_TOOLS = [
       },
     },
   },
+  {
+    type: "function" as const,
+    function: {
+      name: "list_wiki_files",
+      description: "列出知识库中所有文件。可按目录前缀过滤。",
+      parameters: {
+        type: "object" as const,
+        properties: {
+          prefix: { type: "string", description: "可选的目录前缀过滤，如 'concepts/' 或 'summaries/'。不传则列出全部。" },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function" as const,
+    function: {
+      name: "read_wiki_file",
+      description: "读取知识库中的指定文件内容。",
+      parameters: {
+        type: "object" as const,
+        properties: {
+          path: { type: "string", description: "文件在知识库中的相对路径，如 'concepts/用户画像.md' 或 'index.md'" },
+        },
+        required: ["path"],
+      },
+    },
+  },
+  {
+    type: "function" as const,
+    function: {
+      name: "write_wiki_file",
+      description: "创建或更新知识库中的文件。会覆盖已有文件内容。支持创建新目录。",
+      parameters: {
+        type: "object" as const,
+        properties: {
+          path: { type: "string", description: "文件在知识库中的相对路径，如 'concepts/新概念.md'" },
+          content: { type: "string", description: "文件内容（Markdown 格式）" },
+        },
+        required: ["path", "content"],
+      },
+    },
+  },
+  {
+    type: "function" as const,
+    function: {
+      name: "delete_wiki_file",
+      description: "删除知识库中的指定文件。删除后无法恢复，请谨慎使用。",
+      parameters: {
+        type: "object" as const,
+        properties: {
+          path: { type: "string", description: "要删除的文件在知识库中的相对路径" },
+        },
+        required: ["path"],
+      },
+    },
+  },
+  {
+    type: "function" as const,
+    function: {
+      name: "search_wiki",
+      description: "在知识库文件中搜索关键词，返回匹配的文件和内容片段。",
+      parameters: {
+        type: "object" as const,
+        properties: {
+          query: { type: "string", description: "搜索关键词" },
+          limit: { type: "number", description: "返回结果数上限，默认5" },
+        },
+        required: ["query"],
+      },
+    },
+  },
 ];
 
 // ── Orchestrator ────────────────────────────────────────────
@@ -243,6 +315,16 @@ export class AgentOrchestrator {
   }
 
   // ── Input Sanitization ─────────────────────────────────────
+
+  /**
+   * Strip leaked tool call blocks from the final response text (safety net).
+   */
+  private stripToolCallText(text: string): string {
+    text = text.replace(/<\|DSML\|tool_calls>[\s\S]*?<\/\|DSML\|tool_calls>/g, "");
+    text = text.replace(/<invoke\s+name="[^"]+"\s*>[\s\S]*?<\/invoke>/g, "");
+    text = text.replace(/<tool_calls>[\s\S]*?<\/tool_calls>/g, "");
+    return text.trim();
+  }
 
   /**
    * Sanitize user input to prevent prompt injection.
@@ -354,7 +436,7 @@ export class AgentOrchestrator {
         wikiContext: memoryContext.wikiResults.map(r => r.content).join("\n"),
         conceptContext: memoryContext.conceptReasoning,
         episodicContext: memoryContext.episodicContext,
-        availableTools: ["web_search", "get_todos", "add_todos", "get_todo_stats", "get_current_time"],
+        availableTools: ["web_search", "get_todos", "add_todos", "get_todo_stats", "get_current_time", "list_wiki_files", "read_wiki_file", "write_wiki_file", "delete_wiki_file", "search_wiki"],
         availableSkills: this.skillRegistry.getAll(),
       };
 
@@ -384,6 +466,12 @@ export class AgentOrchestrator {
           // no args needed
         } else if (toolName === "get_current_time") {
           // no args needed
+        } else if (toolName === "search_wiki") {
+          toolArgs.query = queryForTool;
+        } else if (toolName === "list_wiki_files") {
+          // Extract prefix from query if present
+          const prefixMatch = queryForTool.match(/(summaries|concepts|agent)/);
+          if (prefixMatch) toolArgs.prefix = prefixMatch[1];
         }
 
         proactiveToolResult = await this.executeToolLocal(toolName, toolArgs);
@@ -459,55 +547,16 @@ export class AgentOrchestrator {
     // 5. Build messages for LLM
     const messages = this.buildLLMMessages(systemPrompt, chatHistory, sanitizedText);
 
-    // 6. Agent loop: probe → maybe tools → stream
+    // 6. LLM call (tools handled proactively by ToolDecisionPolicy in step 3.5)
     let response: string;
     let llmFailed = false;
-    let llmToolCalls: Array<{ id: string; function: { name: string; arguments: string } }> = [];
 
     try {
-      // First, probe for tool calls (non-streaming)
-      const probeResp = await this.callLLMWithTimeout(messages, true) as any;
-      const probeChoice = probeResp.choices?.[0];
-      llmToolCalls = probeChoice?.message?.tool_calls ?? [];
-      const probeText = probeChoice?.message?.content ?? "";
-
-      if (llmToolCalls.length > 0) {
-        // Execute tools locally
-        messages.push({ role: "assistant", content: probeText, tool_calls: llmToolCalls });
-
-        for (const tc of llmToolCalls) {
-          let args: Record<string, unknown> = {};
-          try { args = JSON.parse(tc.function.arguments || "{}"); } catch { /* */ }
-          onActivity?.(`执行工具: ${tc.function.name}`);
-
-          const toolStart = Date.now();
-          const result = await this.executeToolLocal(tc.function.name, args);
-          const latencyMs = Date.now() - toolStart;
-
-          toolCalls.push({
-            toolName: tc.function.name,
-            success: !result.startsWith("Error:"),
-            result,
-            latencyMs,
-          });
-
-          // Record tool usage
-          this.toolMemory.recordCall(
-            tc.function.name,
-            { success: !result.startsWith("Error:"), latencyMs, responseQuality: 0.7 },
-            sanitizedText,
-            route.tool,
-          );
-
-          messages.push({ role: "tool", tool_call_id: tc.id, content: result });
-        }
-
-        // Stream final summary (no tools needed for this call)
-        response = await this.streamLLMWithTimeout(messages, false, onStream);
-      } else {
-        // No tools needed, stream directly
-        response = await this.streamLLMWithTimeout(messages, false, onStream);
-      }
+      // DeepSeek does not support native function calling — tools are handled
+      // proactively by ToolDecisionPolicy before this LLM call (see step 3.5).
+      // We never pass `tools` to the API to prevent the model from outputting
+      // tool call syntax as visible text.
+      response = await this.streamLLMWithTimeout(messages, onStream);
     } catch (llmError: any) {
       // LLM failure — graceful degradation
       llmFailed = true;
@@ -524,14 +573,15 @@ export class AgentOrchestrator {
     }
 
     // Record for "direct_answer" in tool memory
-    if (llmToolCalls.length === 0) {
-      this.toolMemory.recordCall(
-        "direct_answer",
-        { success: true, latencyMs: Date.now() - startTime, responseQuality: 0.7 },
-        userText,
-        route.tool,
-      );
-    }
+    this.toolMemory.recordCall(
+      "direct_answer",
+      { success: true, latencyMs: Date.now() - startTime, responseQuality: 0.7 },
+      userText,
+      route.tool,
+    );
+
+    // 6.5 Strip leaked tool call blocks from response (safety net)
+    response = this.stripToolCallText(response);
 
     // 7. Push to working memory
     this.workingMemory.push({ role: "assistant", content: response, timestamp: Date.now() });
@@ -851,7 +901,12 @@ ${memory.conceptReasoning}
 - 如果知识库中没有，可以基于常识回答，但要说明
 - 使用可用工具获取实时数据（时间、待办、搜索等）
 - 不要编造不存在的内容
-- 不要使用 Markdown 表格`;
+## 格式约束（必须严格遵守）
+- **绝对禁止使用 Markdown 表格**（\`| --- |\` 语法）。表格在渲染时有 bug，会导致内容叠压不可读
+- 如需对比或列举结构化数据，使用列表（\`-\` 或 \`1.\`）代替表格
+- 如需展示键值对或属性，用 \`**键**: 值\` 的列表形式
+- **禁止使用任何 \`|\` 管道符作为列分隔符**，包括代码块中的表格示例
+- 不要使用 YAML frontmatter 之外的 \`---\` 分隔线`;
 
     // Truncate if exceeds character limit to stay within model context window
     if (prompt.length > MAX_SYSTEM_PROMPT_CHARS) {
@@ -1039,6 +1094,179 @@ ${memory.conceptReasoning}
         return JSON.stringify({ query, message: "未找到搜索结果", results: [] });
       }
 
+      case "list_wiki_files": {
+        const wikiFolder = this.config.wikiFolder;
+        const allFiles = this.config.vault.getFiles();
+        const prefix = (args.prefix || "") as string;
+
+        let files = allFiles.filter(f =>
+          f.path.startsWith(wikiFolder) && f.extension === "md"
+        );
+        if (prefix) {
+          files = files.filter(f => f.path.startsWith(`${wikiFolder}/${prefix}`));
+        }
+
+        const listing = files.map(f => ({
+          path: f.path.substring(wikiFolder.length + 1), // relative path
+          name: f.name,
+          size: f.stat?.size ?? 0,
+        }));
+        listing.sort((a, b) => a.path.localeCompare(b.path));
+
+        return JSON.stringify({ wikiFolder, totalFiles: listing.length, files: listing }, null, 2);
+      }
+
+      case "read_wiki_file": {
+        const relPath = (args.path || "") as string;
+        if (!relPath) return JSON.stringify({ error: "path 不能为空" });
+
+        // Path traversal protection
+        if (relPath.includes("..") || relPath.startsWith("/") || relPath.includes("~")) {
+          return JSON.stringify({ error: "非法路径" });
+        }
+
+        const wikiFolder = this.config.wikiFolder;
+        const fullPath = `${wikiFolder}/${relPath}`;
+        const file = this.config.vault.getFileByPath(fullPath);
+        if (!file) return JSON.stringify({ error: `文件不存在: ${relPath}` });
+
+        try {
+          const content = await this.config.vault.read(file);
+          return JSON.stringify({ path: relPath, content, size: content.length }, null, 2);
+        } catch (e: any) {
+          return JSON.stringify({ error: `读取失败: ${e?.message || e}` });
+        }
+      }
+
+      case "write_wiki_file": {
+        const relPath = (args.path || "") as string;
+        const content = (args.content || "") as string;
+        if (!relPath) return JSON.stringify({ error: "path 不能为空" });
+        if (!content) return JSON.stringify({ error: "content 不能为空" });
+
+        // Path traversal protection
+        if (relPath.includes("..") || relPath.startsWith("/") || relPath.includes("~")) {
+          return JSON.stringify({ error: "非法路径" });
+        }
+        // Must be .md file
+        if (!relPath.endsWith(".md")) {
+          return JSON.stringify({ error: "仅支持 .md 文件" });
+        }
+        // Size limit: 100KB
+        if (content.length > 100_000) {
+          return JSON.stringify({ error: "文件过大，限制 100KB" });
+        }
+
+        const wikiFolder = this.config.wikiFolder;
+        const fullPath = `${wikiFolder}/${relPath}`;
+        const vault = this.config.vault;
+
+        try {
+          // Ensure parent directories exist
+          const dirParts = fullPath.split("/");
+          for (let i = 1; i < dirParts.length; i++) {
+            const sub = dirParts.slice(0, i).join("/");
+            if (!(await vault.adapter.exists(sub))) {
+              await vault.adapter.mkdir(sub);
+            }
+          }
+
+          const existing = vault.getFileByPath(fullPath);
+          if (existing) {
+            await vault.modify(existing, content);
+          } else {
+            await vault.create(fullPath, content);
+          }
+
+          // Rebuild vector index to include new/updated file
+          this.rebuildVectorIndex().catch(() => { /* best-effort */ });
+
+          return JSON.stringify({ success: true, path: relPath, action: existing ? "updated" : "created", size: content.length }, null, 2);
+        } catch (e: any) {
+          return JSON.stringify({ error: `写入失败: ${e?.message || e}` });
+        }
+      }
+
+      case "delete_wiki_file": {
+        const relPath = (args.path || "") as string;
+        if (!relPath) return JSON.stringify({ error: "path 不能为空" });
+
+        // Path traversal protection
+        if (relPath.includes("..") || relPath.startsWith("/") || relPath.includes("~")) {
+          return JSON.stringify({ error: "非法路径" });
+        }
+
+        const wikiFolder = this.config.wikiFolder;
+        const fullPath = `${wikiFolder}/${relPath}`;
+
+        // Protect critical files
+        const criticalFiles = ["SCHEMA.md", "index.md", "log.md", "overview.md"];
+        const fileName = relPath.split("/").pop() || "";
+        if (criticalFiles.includes(fileName)) {
+          return JSON.stringify({ error: `不能删除系统文件: ${fileName}。如需重建，请使用维护功能。` });
+        }
+
+        const file = this.config.vault.getFileByPath(fullPath);
+        if (!file) return JSON.stringify({ error: `文件不存在: ${relPath}` });
+
+        try {
+          await this.config.vault.trash(file, false); // false = system trash, not vault .trash
+          // Rebuild vector index to remove deleted file
+          this.rebuildVectorIndex().catch(() => { /* best-effort */ });
+          return JSON.stringify({ success: true, path: relPath, action: "deleted" }, null, 2);
+        } catch (e: any) {
+          return JSON.stringify({ error: `删除失败: ${e?.message || e}` });
+        }
+      }
+
+      case "search_wiki": {
+        const query = (args.query || "") as string;
+        if (!query) return JSON.stringify({ error: "query 不能为空" });
+        const limit = Math.min(args.limit || 5, 20);
+
+        const wikiFolder = this.config.wikiFolder;
+        const allFiles = this.config.vault.getFiles();
+        const wikiFiles = allFiles.filter(f =>
+          f.path.startsWith(wikiFolder) && f.extension === "md"
+        );
+
+        const results: Array<{ path: string; matches: string[]; score: number }> = [];
+        const qLower = query.toLowerCase();
+
+        for (const file of wikiFiles) {
+          try {
+            const content = await this.config.vault.read(file);
+            const lines = content.split("\n");
+            const matches: string[] = [];
+
+            for (const line of lines) {
+              if (line.toLowerCase().includes(qLower)) {
+                const trimmed = line.trim();
+                if (trimmed) matches.push(trimmed.substring(0, 200));
+              }
+            }
+
+            if (matches.length > 0) {
+              results.push({
+                path: file.path.substring(wikiFolder.length + 1),
+                matches: matches.slice(0, 5), // top 5 matching lines per file
+                score: matches.length,
+              });
+            }
+          } catch { /* skip unreadable files */ }
+        }
+
+        results.sort((a, b) => b.score - a.score);
+        const topResults = results.slice(0, limit);
+
+        return JSON.stringify({
+          query,
+          totalMatches: results.length,
+          returned: topResults.length,
+          results: topResults,
+        }, null, 2);
+      }
+
       default:
         return `Error: Unknown tool "${name}"`;
     }
@@ -1047,55 +1275,10 @@ ${memory.conceptReasoning}
   // ── LLM API Calls ─────────────────────────────────────────
 
   /**
-   * Call LLM with a configurable timeout. Wraps fetch with AbortController.
-   */
-  private async callLLMWithTimeout(messages: unknown[], withTools: boolean): Promise<unknown> {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS);
-
-    try {
-      const endpoint = this.config.apiEndpoint.replace(/\/$/, "");
-      const body: Record<string, unknown> = {
-        model: this.config.model,
-        messages,
-        temperature: 0.7,
-        max_tokens: 4096,
-      };
-      if (withTools) {
-        body.tools = AGENT_TOOLS;
-        body.tool_choice = "auto";
-      }
-
-      const response = await fetch(`${endpoint}/chat/completions`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${this.config.getApiKey()}`,
-        },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
-
-      if (!response.ok) {
-        const err = await response.text();
-        throw new Error(`API 请求失败 (${response.status}): ${err.substring(0, 200)}`);
-      }
-      const data = await response.json();
-      if (!data.choices || data.choices.length === 0) {
-        throw new Error("API 返回空响应");
-      }
-      return data;
-    } finally {
-      clearTimeout(timeoutId);
-    }
-  }
-
-  /**
    * Stream LLM response with timeout.
    */
   private async streamLLMWithTimeout(
     messages: unknown[],
-    withTools: boolean,
     onChunk?: StreamCallback,
   ): Promise<string> {
     const controller = new AbortController();
@@ -1110,10 +1293,6 @@ ${memory.conceptReasoning}
         max_tokens: 4096,
         stream: true,
       };
-      if (withTools) {
-        body.tools = AGENT_TOOLS;
-        body.tool_choice = "auto";
-      }
 
       const response = await fetch(`${endpoint}/chat/completions`, {
         method: "POST",
@@ -1175,116 +1354,6 @@ ${memory.conceptReasoning}
     } finally {
       clearTimeout(timeoutId);
     }
-  }
-
-  // Keep old methods for backward compatibility
-  private async callLLM(messages: any[], withTools: boolean): Promise<any> {
-    const endpoint = this.config.apiEndpoint.replace(/\/$/, "");
-    const body: any = {
-      model: this.config.model,
-      messages,
-      temperature: 0.7,
-      max_tokens: 4096,
-    };
-    if (withTools) {
-      body.tools = AGENT_TOOLS;
-      body.tool_choice = "auto";
-    }
-
-    const response = await fetch(`${endpoint}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${this.config.getApiKey()}`,
-      },
-      body: JSON.stringify(body),
-    });
-
-    if (!response.ok) {
-      const err = await response.text();
-      throw new Error(`API 请求失败 (${response.status}): ${err.substring(0, 200)}`);
-    }
-    const data = await response.json();
-    if (!data.choices || data.choices.length === 0) {
-      throw new Error("API 返回空响应");
-    }
-    return data;
-  }
-
-  private async streamLLM(
-    messages: any[],
-    withTools: boolean,
-    onChunk?: StreamCallback,
-  ): Promise<string> {
-    const endpoint = this.config.apiEndpoint.replace(/\/$/, "");
-    const body: any = {
-      model: this.config.model,
-      messages,
-      temperature: 0.7,
-      max_tokens: 4096,
-      stream: true,
-    };
-    if (withTools) {
-      body.tools = AGENT_TOOLS;
-      body.tool_choice = "auto";
-    }
-
-    const response = await fetch(`${endpoint}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${this.config.getApiKey()}`,
-      },
-      body: JSON.stringify(body),
-    });
-
-    if (!response.ok) {
-      const err = await response.text();
-      throw new Error(`API 请求失败 (${response.status}): ${err.substring(0, 200)}`);
-    }
-
-    const reader = response.body?.getReader();
-    if (!reader) throw new Error("无法读取流式响应");
-
-    const decoder = new TextDecoder();
-    let content = "";
-    let buffer = "";
-    let lastPaint = 0;
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
-
-      let hasContent = false;
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || !trimmed.startsWith("data: ")) continue;
-        const jsonStr = trimmed.slice(6);
-        if (jsonStr === "[DONE]") continue;
-        try {
-          const chunk = JSON.parse(jsonStr);
-          const delta = chunk.choices?.[0]?.delta;
-          if (delta?.content) {
-            content += delta.content;
-            hasContent = true;
-          }
-        } catch { /* skip */ }
-      }
-
-      if (hasContent && onChunk) {
-        onChunk(content);
-        const now = Date.now();
-        if (now - lastPaint > 50) {
-          lastPaint = now;
-          await new Promise(r => setTimeout(r, 0));
-        }
-      }
-    }
-
-    return content;
   }
 
   // ── Vector Index Management ───────────────────────────────

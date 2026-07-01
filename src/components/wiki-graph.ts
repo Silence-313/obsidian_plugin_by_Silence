@@ -26,10 +26,10 @@ const NODE_COLORS: Record<GraphNode["type"], string> = {
 };
 
 const NODE_BASE_RADII: Record<GraphNode["type"], number> = {
-  source: 8,
-  summary: 10,
-  concept: 12,
-  index: 14,
+  source: 4,
+  summary: 5,
+  concept: 6,
+  index: 7,
 };
 
 export class WikiGraphComponent {
@@ -383,9 +383,13 @@ export class WikiGraphComponent {
 
     const area = this.cardW * this.cardH;
     const k = Math.sqrt(area / n); // ideal edge length (Fruchterman-Reingold)
-    const strength = 0.03; // scales repulsion & attraction equally, keeps balance at k
+    const baseStrength = 0.03;
 
-    // Repulsion (all pairs) — Coulomb-like, decays with distance
+    // ── Degree-driven force scaling ─────────────────────────
+    const maxDegree = Math.max(1, ...this.nodes.map(nd => nd.degree));
+    const degreeScale = (d: number) => 0.1 + 0.9 * (d / maxDegree);
+
+    // ── Repulsion (all pairs) ───────────────────────────────
     for (let i = 0; i < n; i++) {
       for (let j = i + 1; j < n; j++) {
         const a = this.nodes[i];
@@ -395,12 +399,12 @@ export class WikiGraphComponent {
         const d2 = dx * dx + dy * dy;
         const dist = Math.sqrt(d2);
         if (dist < this.s) {
-          // Nudge apart if overlapping (skip if either is dragged)
           if (a.id !== this.dragging) a.x -= this.s;
           if (b.id !== this.dragging) b.x += this.s;
           continue;
         }
-        const f = (k * k) / dist * strength;
+        const scale = Math.max(degreeScale(a.degree), degreeScale(b.degree));
+        const f = (k * k) / dist * baseStrength * scale;
         const fx = (dx / dist) * f;
         const fy = (dy / dist) * f;
         if (a.id !== this.dragging) { a.vx -= fx; a.vy -= fy; }
@@ -408,7 +412,7 @@ export class WikiGraphComponent {
       }
     }
 
-    // Attraction (edges) — Hooke-like, grows with distance
+    // ── Attraction (edges) ──────────────────────────────────
     const isDraggedEdge = (aId: string, bId: string) =>
       aId === this.dragging || bId === this.dragging;
     for (const e of this.edges) {
@@ -419,8 +423,9 @@ export class WikiGraphComponent {
       const dy = b.y - a.y;
       const dist = Math.sqrt(dx * dx + dy * dy);
       if (dist < 1) continue;
+      const avgScale = (degreeScale(a.degree) + degreeScale(b.degree)) / 2;
       const dragBoost = isDraggedEdge(e.source, e.target) ? 4 : 1;
-      const f = (dist * dist) / k * strength * dragBoost;
+      const f = (dist * dist) / k * baseStrength * avgScale * dragBoost;
       const fx = (dx / dist) * f;
       const fy = (dy / dist) * f;
       a.vx += fx;
@@ -429,17 +434,20 @@ export class WikiGraphComponent {
       b.vy -= fy;
     }
 
-    // Center gravity — strong pull toward viewport center
+    // ── Center gravity ──────────────────────────────────────
+    // Degree-proportional pull toward viewport center:
+    //   hubs (high degree) → strongly anchored near center
+    //   leaves (low degree) → weak pull, can orbit outward
     const cx = this.cardW / 2;
     const cy = this.cardH / 2 + 30;
     const maxSpeed = 10 * this.s;
     for (const node of this.nodes) {
       if (node.id === this.dragging) continue;
-      // Strong center gravity: proportional to distance from center
       const dxc = cx - node.x;
       const dyc = cy - node.y;
-      node.vx += dxc * 0.05;
-      node.vy += dyc * 0.05;
+      const g = 0.01 + 0.09 * degreeScale(node.degree);
+      node.vx += dxc * g;
+      node.vy += dyc * g;
       // Clamp velocity
       const speed = Math.sqrt(node.vx * node.vx + node.vy * node.vy);
       if (speed > maxSpeed) {
@@ -518,7 +526,10 @@ export class WikiGraphComponent {
   }
 
   private drawNode(ctx: CanvasRenderingContext2D, node: GraphNode) {
-    const r = Math.min(22 * this.s, node.radius + node.degree * 1.5 * this.s);
+    // Radius: base × (1 + degree/2), capped at 4× base, scaled by s
+    const maxDegree = Math.max(1, ...this.nodes.map(nd => nd.degree));
+    const degreeBoost = 1 + (node.degree / Math.max(1, maxDegree)) * 3; // 1× → 4×
+    const r = Math.min(16 * this.s, node.radius * degreeBoost);
     const isHovered = this.hovering === node.id;
 
     // Glow on hover
