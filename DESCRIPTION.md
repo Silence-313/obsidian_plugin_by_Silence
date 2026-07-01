@@ -217,3 +217,13 @@ TodoItem {
 开发命令：`npm run dev`（watch + inline sourcemap）、`npm run build`（生产模式）、`npm run lint`（类型检查）。
 
 配合 hot-reload 插件 + `.hotreload` 标记文件实现保存即热重载。
+
+## 七、Python Agent Framework 重建
+
+Agent 认知系统（Memory/Reasoning/Evolution）正在独立重建为 Python 版本。相关文档：
+
+| 文档 | 说明 |
+|------|------|
+| `PYTHON_RECONSTRUCTION_SPEC.md` | 行为规范 — 从 TypeScript 逆向得出的完整算法/数据模型/生命周期 |
+| `PYTHON_AGENT_ARCHITECTURE.md` | 架构设计 — 六边形架构 + 事件驱动管道 + Protocol 插件系统 |
+| `PYTHON_AGENT_DEVELOPMENT_PLAN.md` | 实施计划 — 11 阶段、93 文件、130 小时 |

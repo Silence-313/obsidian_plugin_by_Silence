@@ -354,3 +354,20 @@ vault 中安装了 `hot-reload` 插件，需要在 homepage 插件目录有 `.ho
 7. **DeepSeek 不支持原生 function calling：** ✅ 已解决（2026-07-01）— 传入 `tools` 参数导致模型用文本模拟工具调用（输出 `<invoke>` / DSML 格式的可见文本），工具未实际执行。修复：移除所有 LLM 调用中的 `tools` 参数，工具执行完全由 `ToolDecisionPolicy` 自主决策层在 LLM 调用前完成，结果注入 system prompt。
 8. **LLM Wiki 流式渲染失效：** ✅ 已解决（2026-07-01）— 两重 bug：(1) streaming 消息 push 后未调用 `render()`，DOM 中无 `#llmwiki-streaming` 挂载点；(2) `_streamingIdx` 数组下标在 `clearActivity()` 删除前置 activity 消息时漂移，导致 `id="llmwiki-streaming"` 挂到错误 DOM 元素。修复：push 后加 `render()` + `clearActivity()` 中同步扣减 `_streamingIdx`。
 9. **Python SSL 证书缺失：** ✅ 已解决（2026-07-01）— Python 3.13 在 macOS 上缺少根证书，`vision` 脚本报 `CERTIFICATE_VERIFY_FAILED`。修复：运行 `Install Certificates.command` 安装 certifi。
+
+## Python Agent Framework 重建
+
+已生成三份 Python Agent 重建文档，位于项目根目录：
+
+| 文档 | 用途 |
+|------|------|
+| `PYTHON_RECONSTRUCTION_SPEC.md` | 行为规范 — 从 TypeScript 逆向得出的完整算法/数据模型/生命周期 |
+| `PYTHON_AGENT_ARCHITECTURE.md` | 架构设计 — 六边形架构、事件驱动管道、Protocol 驱动的插件系统 |
+| `PYTHON_AGENT_DEVELOPMENT_PLAN.md` | 实施计划 — 11 阶段、93 文件、130 小时、3 人分工 |
+
+**核心架构决策：**
+- 六边形架构（Ports & Adapters）：所有外部依赖在 Protocol 后面
+- 事件驱动管道：12 个 PipelineStage 通过 EventBus 解耦
+- 能力层三层统一：Tool / Skill / SearchProvider 都实现 Capability 抽象
+- Planner + Execution Engine：替代 switch/case 工具选择
+- 不可变 PipelineContext：每个 stage 返回新实例
