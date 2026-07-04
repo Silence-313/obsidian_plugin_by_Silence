@@ -110,6 +110,9 @@ export class LlmWikiComponent {
       addTodo: (text, color, date, startTime, endTime) => {
         this.view.addTodo(text, color, date, startTime, endTime);
       },
+      deleteTodo: (id) => {
+        this.view.deleteTodo(id);
+      },
       requestUrl: (opts) => requestUrl({ url: opts.url, method: opts.method }),
     });
 

@@ -1,6 +1,6 @@
 import { Plugin } from "obsidian";
 import type { HomepageSettings } from "./types";
-import { VIEW_TYPE_HOMEPAGE, VIEW_TYPE_STUDY, DEFAULT_COMPONENTS, DEFAULT_SETTINGS, DEFAULT_STUDY_SETTINGS, DEFAULT_LLMWIKI_SETTINGS } from "./constants";
+import { VIEW_TYPE_HOMEPAGE, VIEW_TYPE_STUDY, DEFAULT_COMPONENTS, DEFAULT_SETTINGS, DEFAULT_STUDY_SETTINGS, DEFAULT_LLMWIKI_SETTINGS, DEFAULT_APP_LAUNCHER_SETTINGS } from "./constants";
 import { loadApiKeyFromKeychain } from "./utils";
 import HomepageView from "./view";
 import StudyView from "./study-view";
@@ -156,6 +156,11 @@ export default class HomepagePlugin extends Plugin {
       this.settings.llmWiki = Object.assign({}, DEFAULT_LLMWIKI_SETTINGS);
     } else {
       this.settings.llmWiki = Object.assign({}, DEFAULT_LLMWIKI_SETTINGS, this.settings.llmWiki);
+    }
+    if (!this.settings.appLauncher) {
+      this.settings.appLauncher = Object.assign({}, DEFAULT_APP_LAUNCHER_SETTINGS);
+    } else {
+      this.settings.appLauncher = Object.assign({}, DEFAULT_APP_LAUNCHER_SETTINGS, this.settings.appLauncher);
     }
   }
 

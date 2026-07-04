@@ -18,6 +18,7 @@ export interface ToolDecision {
   confidence: number;        // 0..1
   reason: string;
   query_rewrite?: string;    // optimized query for the selected tool/skill
+  tool_args?: Record<string, any>;  // structured args extracted from user query
 }
 
 export interface ToolDecisionContext {
@@ -48,7 +49,8 @@ function buildDecisionPrompt(ctx: ToolDecisionContext): string {
       switch (t) {
         case "web_search": return `  - web_search: 搜索互联网获取实时信息、新闻、最新数据、外部事实`;
         case "get_todos": return `  - get_todos: 查询用户的待办事项列表，按日期/状态/优先级筛选`;
-        case "add_todos": return `  - add_todos: 添加新的待办事项到指定日期`;
+        case "add_todos": return `  - add_todos: 添加新的待办事项到指定日期。tool_args: {"date":"YYYY-MM-DD","todos":[{"text":"...","priority":"高/中高/中/低","startTime":"HH:MM","endTime":"HH:MM"}]}`;
+        case "delete_todo": return `  - delete_todo: 删除或完成待办事项。tool_args: {"text":"关键词"}模糊匹配内容/时间, {"id":"xxx"}精确匹配, {"startTime":"HH:MM","endTime":"HH:MM"}按时间段匹配, 可选"date":"YYYY-MM-DD"限定日期, "mark_done":true标记完成`;
         case "get_todo_stats": return `  - get_todo_stats: 获取待办统计概览（完成率、分布等）`;
         case "get_current_time": return `  - get_current_time: 获取当前精确时间和日期`;
         default: return `  - ${t}`;
@@ -77,6 +79,7 @@ ${skillList}
 - 用户问题需要实时信息、最新数据、外部事实 → web_search
 - 用户询问待办、任务、日程 → get_todos 或 get_todo_stats
 - 用户要添加待办、安排任务 → add_todos
+- 用户要删除待办、移除任务、标记完成 → delete_todo
 - 用户询问当前时间、日期 → get_current_time
 
 ### 不使用：
@@ -100,8 +103,17 @@ ${ctx.userQuery}
   "skill_name": "技能名或null",
   "confidence": 0.0-1.0,
   "reason": "简短决策理由",
-  "query_rewrite": "优化后的查询或null"
-}`;
+  "query_rewrite": "优化后的查询或null",
+  "tool_args": null  // 仅当 use_tool=true 时：从用户输入中提取的结构化参数，格式见工具描述中的 tool_args
+}
+
+### tool_args 说明
+- 仅当 use_tool=true 且该工具需要参数时才填写 tool_args
+- 从用户输入中提取实际值填入
+- 不需要参数的工具（如 get_current_time）填 null
+- add_todos 示例：{"date":"2026-07-04","todos":[{"text":"LeetCode","startTime":"09:30","endTime":"10:30"}]}
+- web_search 示例：{"query":"最新AI新闻"}
+- get_todos 示例：{"date":"2026-07-04"}`;
 }
 
 // ── Policy ──────────────────────────────────────────────────
@@ -297,7 +309,11 @@ export class ToolDecisionPolicy {
       ? parsed.query_rewrite
       : undefined;
 
-    return { use_tool: useTool, tool_name: toolName, use_skill: useSkill, skill_name: skillName, confidence, reason, query_rewrite: queryRewrite };
+    const toolArgs: Record<string, any> | undefined = (parsed.tool_args != null && typeof parsed.tool_args === "object")
+      ? parsed.tool_args as Record<string, any>
+      : undefined;
+
+    return { use_tool: useTool, tool_name: toolName, use_skill: useSkill, skill_name: skillName, confidence, reason, query_rewrite: queryRewrite, tool_args: toolArgs };
   }
 
   // ── Fallback ──────────────────────────────────────────────

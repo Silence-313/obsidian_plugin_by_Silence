@@ -10,6 +10,7 @@ import { SidebarComponent } from "./components/sidebar";
 import { TodoListComponent } from "./components/todolist";
 import { LlmWikiComponent } from "./components/llmwiki";
 import { WikiGraphComponent } from "./components/wiki-graph";
+import { AppLauncherComponent } from "./components/app-launcher";
 
 
 export default class HomepageView extends ItemView {
@@ -25,6 +26,7 @@ export default class HomepageView extends ItemView {
   todolist: TodoListComponent;
   llmwiki: LlmWikiComponent;
   wikigraph: WikiGraphComponent;
+  applauncher: AppLauncherComponent;
 
   constructor(leaf: WorkspaceLeaf, plugin: HomepagePlugin) {
     super(leaf);
@@ -36,6 +38,7 @@ export default class HomepageView extends ItemView {
     this.todolist = new TodoListComponent(this);
     this.llmwiki = new LlmWikiComponent(this);
     this.wikigraph = new WikiGraphComponent(this);
+    this.applauncher = new AppLauncherComponent(this);
   }
 
   getViewType(): string {
@@ -173,6 +176,7 @@ export default class HomepageView extends ItemView {
         ">
           <div id="homepage-card" style="
             display: flex;
+            flex-direction: column;
             width: 100%;
             height: 100%;
             background: var(--background-primary);
@@ -180,6 +184,27 @@ export default class HomepageView extends ItemView {
             border-radius: 14px;
             position: relative;
           ">
+            <div id="homepage-schedule-header" style="
+              display: flex;
+              align-items: center;
+              justify-content: space-between;
+              padding: 6px 12px;
+              border-bottom: 1px solid var(--background-modifier-border);
+              flex-shrink: 0;
+            ">
+              <span style="font-size: 13px; font-weight: 600; color: var(--text-normal);">📅 日程中心</span>
+              <button id="schedule-refresh-btn" style="
+                background: transparent;
+                border: 1px solid var(--background-modifier-border);
+                border-radius: 4px;
+                color: var(--text-muted);
+                cursor: pointer;
+                font-size: 11px;
+                padding: 2px 8px;
+                font-family: inherit;
+              ">🔄 刷新</button>
+            </div>
+            <div style="display: flex; flex: 1; min-height: 0;">
             <div id="homepage-stats" style="
               width: 100px;
               padding: 10px 8px;
@@ -202,6 +227,7 @@ export default class HomepageView extends ItemView {
               flex-direction: column;
               gap: 6px;
             "></div>
+            </div>
           </div>
         </div>
         <div id="homepage-timer-wrapper" data-component-id="timer" data-component-wrapper="true" style="
@@ -462,6 +488,17 @@ export default class HomepageView extends ItemView {
                   ">${labels[m]}</button>`;
                 }).join("")}
               </div>
+              <button id="todolist-refresh-btn" style="
+                background: transparent;
+                border: 1px solid var(--background-modifier-border);
+                border-radius: 4px;
+                color: var(--text-muted);
+                cursor: pointer;
+                font-size: 11px;
+                padding: 2px 6px;
+                flex-shrink: 0;
+                font-family: inherit;
+              " title="刷新">🔄</button>
               <button class="todolist-add" style="
                 background: var(--interactive-accent);
                 color: var(--text-on-accent);
@@ -529,6 +566,30 @@ export default class HomepageView extends ItemView {
             position: relative;
           "></div>
         </div>
+        <div id="homepage-applauncher-wrapper" data-component-id="applauncher" data-component-wrapper="true" style="
+          position: absolute;
+          resize: both;
+          overflow: hidden;
+          width: 560px;
+          height: 420px;
+          min-width: 320px;
+          min-height: 280px;
+          max-width: 100%;
+          border-radius: 14px;
+          box-shadow: 0 4px 24px rgba(0,0,0,0.12), 0 0 0 1px var(--background-modifier-border);
+          display: ${this.isComponentAdded("applauncher") ? "block" : "none"};
+        ">
+          <div id="homepage-applauncher-card" style="
+            display: flex;
+            flex-direction: column;
+            width: 100%;
+            height: 100%;
+            background: var(--background-primary);
+            overflow: hidden;
+            border-radius: 14px;
+            position: relative;
+          "></div>
+        </div>
       </div>
       <div id="homepage-sidebar" style="
         position: absolute;
@@ -558,6 +619,18 @@ export default class HomepageView extends ItemView {
         this.schedule.renderTodo();
       }
       this.setupCardPosition(container, "schedule", "#homepage-card-wrapper");
+
+      // Refresh button
+      const scheduleRefreshBtn = container.querySelector("#schedule-refresh-btn");
+      scheduleRefreshBtn?.addEventListener("click", () => {
+        this.schedule.renderStats();
+        this.schedule.renderCalendar();
+        if (this.isComponentAdded("todolist")) {
+          this.todolist.renderEmbedded();
+        } else {
+          this.schedule.renderTodo();
+        }
+      });
     }
 
     if (this.isComponentAdded("timer")) {
@@ -576,6 +649,12 @@ export default class HomepageView extends ItemView {
     if (this.isComponentAdded("todolist") && !this.isComponentAdded("schedule")) {
       this.todolist.renderStandalone();
       this.setupCardPosition(container, "todolist", "#homepage-todolist-wrapper");
+
+      // Refresh button
+      const todolistRefreshBtn = container.querySelector("#todolist-refresh-btn");
+      todolistRefreshBtn?.addEventListener("click", () => {
+        this.todolist.refresh();
+      });
     }
 
     if (this.isComponentAdded("llmwiki")) {
@@ -586,6 +665,11 @@ export default class HomepageView extends ItemView {
     if (this.isComponentAdded("wikigraph")) {
       this.wikigraph.render();
       this.setupCardPosition(container, "wikigraph", "#homepage-wikigraph-wrapper");
+    }
+
+    if (this.isComponentAdded("applauncher")) {
+      this.applauncher.render();
+      this.setupCardPosition(container, "applauncher", "#homepage-applauncher-wrapper");
     }
 
     if (!this.isComponentAdded("study")) {
@@ -618,6 +702,7 @@ export default class HomepageView extends ItemView {
     if (target.closest(".timer-picker-wrap")) return true;
     if (target.closest(".desktop-item")) return true;
     if (target.closest(".todolist-tab, .todolist-check, .todolist-delete, .todolist-add, .todolist-gantt-bar")) return true;
+    if (target.closest(".applauncher-item")) return true;
     return false;
   }
 

@@ -35,6 +35,7 @@ export interface OrchestratorConfig {
   model: string;
   getTodos: () => any[];
   addTodo: (text: string, color: string, date: string, startTime: string, endTime: string) => void;
+  deleteTodo: (id: string) => void;
   requestUrl: (opts: { url: string; method?: string }) => Promise<{ status: number; json: any; text: string }>;
 }
 
@@ -138,6 +139,25 @@ const AGENT_TOOLS = [
           },
         },
         required: ["date", "todos"],
+      },
+    },
+  },
+  {
+    type: "function" as const,
+    function: {
+      name: "delete_todo",
+      description: "删除或完成待办事项。支持按文本关键词、ID、时间段匹配。",
+      parameters: {
+        type: "object" as const,
+        properties: {
+          text: { type: "string", description: "待办内容关键词模糊匹配，也支持时间如'09:30'或'09:30-10:30'格式" },
+          id: { type: "string", description: "待办 ID，精确匹配" },
+          date: { type: "string", description: "限定日期 YYYY-MM-DD，不传则搜索全部日期" },
+          startTime: { type: "string", description: "按开始时间匹配 HH:MM" },
+          endTime: { type: "string", description: "按结束时间匹配 HH:MM" },
+          mark_done: { type: "boolean", description: "设为 true 表示标记完成而非删除。默认 false（删除）。" },
+        },
+        required: [],
       },
     },
   },
@@ -320,9 +340,29 @@ export class AgentOrchestrator {
    * Strip leaked tool call blocks from the final response text (safety net).
    */
   private stripToolCallText(text: string): string {
+    // XML/DSML-style tool call blocks
     text = text.replace(/<\|DSML\|tool_calls>[\s\S]*?<\/\|DSML\|tool_calls>/g, "");
     text = text.replace(/<invoke\s+name="[^"]+"\s*>[\s\S]*?<\/invoke>/g, "");
     text = text.replace(/<tool_calls>[\s\S]*?<\/tool_calls>/g, "");
+
+    // Plain-text tool call simulations
+    // "工具调用\nadd_todos", "调用工具: web_search", "tool_call: xxx" etc.
+    text = text.replace(/(?:工具调用|调用工具|执行工具|tool[_\s]?call|function[_\s]?call)[:：]?\s*\n?\s*\w+/gi, "");
+
+    // Trailing lines that are just a tool/function name after a line break
+    // e.g. "...\n\nadd_todos\n" at end of response
+    const knownTools = ["add_todos", "delete_todo", "get_todos", "get_todo_stats", "get_current_time",
+      "web_search", "search_wiki", "list_wiki_files", "read_wiki_file",
+      "write_wiki_file", "delete_wiki_file"];
+    for (const tool of knownTools) {
+      // Strip bare tool name that appears as its own line at the end
+      const toolRegex = new RegExp(`\\n\\s*${tool.replace(/_/g, "_")}\\s*$`, "g");
+      text = text.replace(toolRegex, "");
+    }
+
+    // Clean up multiple consecutive newlines left by stripping
+    text = text.replace(/\n{3,}/g, "\n\n");
+
     return text.trim();
   }
 
@@ -436,7 +476,7 @@ export class AgentOrchestrator {
         wikiContext: memoryContext.wikiResults.map(r => r.content).join("\n"),
         conceptContext: memoryContext.conceptReasoning,
         episodicContext: memoryContext.episodicContext,
-        availableTools: ["web_search", "get_todos", "add_todos", "get_todo_stats", "get_current_time", "list_wiki_files", "read_wiki_file", "write_wiki_file", "delete_wiki_file", "search_wiki"],
+        availableTools: ["web_search", "get_todos", "add_todos", "delete_todo", "get_todo_stats", "get_current_time", "list_wiki_files", "read_wiki_file", "write_wiki_file", "delete_wiki_file", "search_wiki"],
         availableSkills: this.skillRegistry.getAll(),
       };
 
@@ -453,25 +493,32 @@ export class AgentOrchestrator {
 
         onActivity?.(`自主执行工具: ${toolName}`);
         const toolStart = Date.now();
-        const toolArgs: Record<string, unknown> = {};
+        let toolArgs: Record<string, unknown> = {};
 
-        // Build tool-specific args from the rewritten query
-        if (toolName === "web_search") {
-          toolArgs.query = queryForTool;
-        } else if (toolName === "get_todos") {
-          // Extract date/status keywords from query
-          if (/今天/.test(queryForTool)) toolArgs.date = new Date().toISOString().split("T")[0];
-          if (/未完成|还没做/.test(queryForTool)) toolArgs.status = "pending";
-        } else if (toolName === "get_todo_stats") {
-          // no args needed
-        } else if (toolName === "get_current_time") {
-          // no args needed
-        } else if (toolName === "search_wiki") {
-          toolArgs.query = queryForTool;
-        } else if (toolName === "list_wiki_files") {
-          // Extract prefix from query if present
-          const prefixMatch = queryForTool.match(/(summaries|concepts|agent)/);
-          if (prefixMatch) toolArgs.prefix = prefixMatch[1];
+        // Prefer structured tool_args from LLM decision, fallback to heuristic extraction
+        if (toolDecisionResult.decision.tool_args && Object.keys(toolDecisionResult.decision.tool_args).length > 0) {
+          toolArgs = { ...toolDecisionResult.decision.tool_args };
+        } else {
+          // Build tool-specific args from the rewritten query (heuristic fallback)
+          if (toolName === "web_search") {
+            toolArgs.query = queryForTool;
+          } else if (toolName === "get_todos") {
+            if (/今天/.test(queryForTool)) toolArgs.date = new Date().toISOString().split("T")[0];
+            if (/未完成|还没做/.test(queryForTool)) toolArgs.status = "pending";
+          } else if (toolName === "add_todos") {
+            // Heuristic: parse date and todo items from user query
+            const now = new Date();
+            if (/今天/.test(sanitizedText)) {
+              toolArgs.date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+            } else {
+              toolArgs.date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+            }
+          } else if (toolName === "search_wiki") {
+            toolArgs.query = queryForTool;
+          } else if (toolName === "list_wiki_files") {
+            const prefixMatch = queryForTool.match(/(summaries|concepts|agent)/);
+            if (prefixMatch) toolArgs.prefix = prefixMatch[1];
+          }
         }
 
         proactiveToolResult = await this.executeToolLocal(toolName, toolArgs);
@@ -885,7 +932,7 @@ export class AgentOrchestrator {
       : "";
 
     // Build prompt with length guard
-    let prompt = `你是用户的个人 AI 助手，拥有工具调用能力。用中文回复，清晰简洁。
+    let prompt = `你是用户的个人 AI 助手。用中文回复，清晰简洁。
 
 ## ${timeContext}
 ${profileSection}
@@ -899,7 +946,8 @@ ${memory.conceptReasoning}
 - 基于提供的知识库内容和记忆回答用户问题
 - 如果知识库中有相关信息，注明来源
 - 如果知识库中没有，可以基于常识回答，但要说明
-- 使用可用工具获取实时数据（时间、待办、搜索等）
+- 工具已在后台自动执行，如果系统提示中包含"## 工具执行结果"，直接引用其结果回复用户
+- 不要在回复中输出工具调用文本、不要模拟函数调用、不要使用 <invoke> 或 DSML 标签
 - 不要编造不存在的内容
 ## 格式约束（必须严格遵守）
 - **绝对禁止使用 Markdown 表格**（\`| --- |\` 语法）。表格在渲染时有 bug，会导致内容叠压不可读
@@ -1033,6 +1081,82 @@ ${memory.conceptReasoning}
           added.push({ text: item.text, priority });
         }
         return JSON.stringify({ success: true, date: dateKey, count: added.length, todos: added }, null, 2);
+      }
+
+      case "delete_todo": {
+        const allTodos = this.config.getTodos();
+        const text = args.text as string | undefined;
+        const id = args.id as string | undefined;
+        const date = args.date as string | undefined;
+        const startTime = args.startTime as string | undefined;
+        const endTime = args.endTime as string | undefined;
+        const markDone = args.mark_done === true;
+
+        // Pre-filter by date if specified
+        let pool = allTodos;
+        if (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) {
+          pool = pool.filter((t: any) => t.date === date);
+        }
+
+        let matched: any[] = [];
+
+        if (id) {
+          matched = pool.filter((t: any) => t.id === id);
+        } else if (text) {
+          const q = text.toLowerCase();
+          // Try exact text match first, then time match, then fuzzy
+          matched = pool.filter((t: any) => t.text.toLowerCase().includes(q));
+          if (matched.length === 0) {
+            // Try matching by time: if text looks like "HH:MM" or "HH:MM-HH:MM"
+            const timeMatch = q.match(/(\d{1,2}:\d{2})\s*[-~到至]\s*(\d{1,2}:\d{2})/);
+            if (timeMatch) {
+              matched = pool.filter((t: any) =>
+                t.startTime === timeMatch[1] && t.endTime === timeMatch[2]
+              );
+            } else {
+              // Single time: match startTime or endTime
+              matched = pool.filter((t: any) =>
+                t.startTime === q || t.endTime === q
+              );
+            }
+          }
+        } else if (startTime || endTime) {
+          matched = pool.filter((t: any) => {
+            if (startTime && endTime) return t.startTime === startTime && t.endTime === endTime;
+            if (startTime) return t.startTime === startTime;
+            return t.endTime === endTime;
+          });
+        } else {
+          return JSON.stringify({ error: "必须提供 text、id 或 startTime/endTime 来指定要操作的目标" });
+        }
+
+        if (matched.length === 0) {
+          // Return the pool for debugging so LLM can suggest alternatives
+          const poolSummary = pool.map((t: any) =>
+            `${t.text}${t.startTime ? ` (${t.startTime}${t.endTime ? '-' + t.endTime : ''})` : ''}`
+          ).join("、");
+          return JSON.stringify({
+            error: `未找到匹配的待办: ${text || id || (startTime + (endTime ? '-' + endTime : ''))}`,
+            searchedDate: date || "全部日期",
+            availableInScope: poolSummary || "(无)",
+          });
+        }
+
+        for (const t of matched) {
+          if (markDone) {
+            t.done = true;
+          } else {
+            this.config.deleteTodo(t.id);
+          }
+        }
+
+        const action = markDone ? "已标记完成" : "已删除";
+        return JSON.stringify({
+          success: true,
+          action,
+          count: matched.length,
+          items: matched.map((t: any) => ({ id: t.id, text: t.text, startTime: t.startTime, endTime: t.endTime })),
+        }, null, 2);
       }
 
       case "web_search": {

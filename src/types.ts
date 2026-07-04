@@ -28,6 +28,18 @@ export interface StudySettings {
   history: string[];
 }
 
+export interface AppLauncherItem {
+  id: string;
+  name: string;
+  icon: string;
+  appName: string;
+  command: string;
+}
+
+export interface AppLauncherSettings {
+  apps: AppLauncherItem[];
+}
+
 export interface LlmWikiSettings {
   apiKey: string;
   apiKeyInKeychain: boolean;
@@ -53,4 +65,5 @@ export interface HomepageSettings {
   desktopNames: string[];
   studyMode: StudySettings;
   llmWiki: LlmWikiSettings;
+  appLauncher: AppLauncherSettings;
 }
