@@ -1,11 +1,14 @@
 import { Plugin } from "obsidian";
 import type { HomepageSettings } from "./types";
-import { VIEW_TYPE_HOMEPAGE, VIEW_TYPE_STUDY, DEFAULT_COMPONENTS, DEFAULT_SETTINGS, DEFAULT_STUDY_SETTINGS, DEFAULT_LLMWIKI_SETTINGS, DEFAULT_APP_LAUNCHER_SETTINGS } from "./constants";
+import { VIEW_TYPE_HOMEPAGE, VIEW_TYPE_STUDY, DEFAULT_COMPONENTS, DEFAULT_SETTINGS, DEFAULT_STUDY_SETTINGS, DEFAULT_LLMWIKI_SETTINGS, DEFAULT_APP_LAUNCHER_SETTINGS, DEFAULT_INLINE_PREDICT_SETTINGS } from "./constants";
 import { loadApiKeyFromKeychain } from "./utils";
 import HomepageView from "./view";
 import StudyView from "./study-view";
 import { StudyController } from "./study-controller";
 import { HomepageSettingTab } from "./settings";
+import { createInlinePredictExtension } from "./components/inline-predict";
+import { registerMarkdownCodeRunners } from "./components/code-runner-markdown";
+import { createCodeRunnerEditorExtension } from "./components/code-runner-editor";
 
 export default class HomepagePlugin extends Plugin {
   settings: HomepageSettings = DEFAULT_SETTINGS;
@@ -87,6 +90,16 @@ export default class HomepagePlugin extends Plugin {
       }
     });
 
+    this.registerEditorExtension(
+      createInlinePredictExtension(() => this.settings),
+    );
+
+    this.registerEditorExtension(
+      createCodeRunnerEditorExtension(() => this.settings),
+    );
+
+    registerMarkdownCodeRunners(this);
+
     this.startWikiMaintenanceTimer();
     this.addSettingTab(new HomepageSettingTab(this.app, this));
   }
@@ -161,6 +174,11 @@ export default class HomepagePlugin extends Plugin {
       this.settings.appLauncher = Object.assign({}, DEFAULT_APP_LAUNCHER_SETTINGS);
     } else {
       this.settings.appLauncher = Object.assign({}, DEFAULT_APP_LAUNCHER_SETTINGS, this.settings.appLauncher);
+    }
+    if (!this.settings.inlinePredict) {
+      this.settings.inlinePredict = Object.assign({}, DEFAULT_INLINE_PREDICT_SETTINGS);
+    } else {
+      this.settings.inlinePredict = Object.assign({}, DEFAULT_INLINE_PREDICT_SETTINGS, this.settings.inlinePredict);
     }
   }
 

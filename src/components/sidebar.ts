@@ -117,6 +117,8 @@ export class SidebarComponent {
       desktop: `<svg width="28" height="28" viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.7"><rect x="2" y="3" width="24" height="17" rx="2"/><line x1="8" y1="23" x2="20" y2="23"/><line x1="14" y1="20" x2="14" y2="23"/></svg>`,
       todolist: `<svg width="28" height="28" viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.7"><rect x="5" y="4" width="18" height="20" rx="2"/><line x1="9" y1="10" x2="19" y2="10"/><line x1="9" y1="14" x2="19" y2="14"/><line x1="9" y1="18" x2="15" y2="18"/></svg>`,
       study: `<svg width="28" height="28" viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.7"><rect x="2" y="4" width="24" height="17" rx="2"/><line x1="6" y1="8" x2="22" y2="8"/><line x1="6" y1="12" x2="18" y2="12"/><line x1="6" y1="16" x2="14" y2="16"/></svg>`,
+      inlinepredict: `<svg width="28" height="28" viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.7"><path d="M14 4l1.5 5.5L21 8l-4 4.5L20 17l-5.5-2L14 20l-1.5-5.5L7 17l2.5-4.5L7 8l5 1.5z"/></svg>`,
+      coderunner: `<svg width="28" height="28" viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.7"><polyline points="11 7 4 14 11 21"/><polyline points="17 7 24 14 17 21"/><line x1="14" y1="5" x2="14" y2="23"/></svg>`,
     };
     return icons[id] || `<svg width="28" height="28" viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.7"><rect x="4" y="4" width="20" height="20" rx="3"/></svg>`;
   }

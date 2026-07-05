@@ -639,7 +639,10 @@ export default class HomepageView extends ItemView {
     }
 
     if (this.isComponentAdded("desktop")) {
-      this.desktop.currentPaths = this.plugin.settings.desktopFolders.map(f => f);
+      // Sync desktopCurrentPaths length with desktopFolders (handles old data / external edits)
+      const cp = this.plugin.settings.desktopCurrentPaths;
+      while (cp.length < this.plugin.settings.desktopFolders.length) cp.push("");
+      if (cp.length > this.plugin.settings.desktopFolders.length) cp.length = this.plugin.settings.desktopFolders.length;
       for (let i = 0; i < this.plugin.settings.desktopFolders.length; i++) {
         this.desktop.init(i);
         this.setupCardPosition(container, `desktop-${i}`, `#homepage-desktop-wrapper-${i}`);
@@ -750,13 +753,15 @@ export default class HomepageView extends ItemView {
     const w = layout.width > 0 ? layout.width : defaultW;
     const h = layout.height > 0 ? layout.height : defaultH;
 
-    let posX = layout.x >= 0 ? layout.x : Math.max(0, (contentArea.offsetWidth - w) / 2);
+    const rightPad = this.getSidebarWidth(contentArea);
+
+    let posX = layout.x >= 0 ? layout.x : Math.max(0, (contentArea.offsetWidth - rightPad - w) / 2);
     let posY = layout.y >= 0 ? layout.y : Math.max(0, (contentArea.offsetHeight - h) / 2);
     wrapper.style.left = posX + "px";
     wrapper.style.top = posY + "px";
 
     if (layout.x < 0) {
-      const maxX = contentArea.offsetWidth - w;
+      const maxX = contentArea.offsetWidth - rightPad - w;
       const others = this.getOtherCardBounds(wrapperSelector);
       let cx = posX, cy = posY;
       for (let iter = 0; iter < 5; iter++) {
@@ -790,7 +795,8 @@ export default class HomepageView extends ItemView {
 
     wrapper.addEventListener("pointermove", (e) => {
       if (!wrapper.hasPointerCapture((e as PointerEvent).pointerId)) return;
-      const maxX = contentArea.offsetWidth - wrapper.offsetWidth;
+      const rightPad = this.getSidebarWidth(contentArea);
+      const maxX = contentArea.offsetWidth - rightPad - wrapper.offsetWidth;
       const nx = Math.max(0, Math.min(origLeft + e.clientX - startX, maxX));
       const ny = Math.max(0, origTop + e.clientY - startY);
       const others = this.getOtherCardBounds(wrapperSelector);
@@ -844,6 +850,11 @@ export default class HomepageView extends ItemView {
     this.containerEl.querySelectorAll('[data-component-wrapper]').forEach(w => {
       this.cardResizeObserver!.observe(w as HTMLElement);
     });
+  }
+
+  private getSidebarWidth(contentArea: HTMLElement): number {
+    const sidebar = contentArea.querySelector("#homepage-sidebar") as HTMLElement | null;
+    return sidebar?.offsetWidth || 28;
   }
 
   private expandContentHeight() {

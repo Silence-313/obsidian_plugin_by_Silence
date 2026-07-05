@@ -48,6 +48,10 @@ src/                 # 源码目录
     llmwiki.ts       # LlmWikiComponent — LLM Wiki：DeepSeek API 对话、知识库维护、委托 AgentOrchestrator
 	    wiki-graph.ts    # WikiGraphComponent — Wiki 图谱：Canvas 2D 力导向布局、拖拽/缩放/点击交互
 	    app-launcher.ts  # AppLauncherComponent — 应用启动器：网格图标、AppleScript 窗口定位、启动/关闭/对齐
+	    inline-predict.ts # InlinePredictPlugin — 内联预测：CM6 ViewPlugin + StateField，幽灵文本补全
+	    code-runner.ts       # CodeRunner 执行引擎 — executeCode() 支持 py/js/sh/c/cpp
+	    code-runner-markdown.ts # 阅读视图：registerMarkdownCodeBlockProcessor 注入 Run 按钮
+	    code-runner-editor.ts   # 实时预览：CM6 ViewPlugin 扫描代码块 + Decoration.widget
   agent/             # Agent 模块 — 5 层认知系统
     index.ts          # 模块 barrel export
     agent_orchestrator.ts  # AgentOrchestrator — 中央管线（5 层全集成）
@@ -121,6 +125,11 @@ styles.css           # 日历 hover 样式
 | `SkillRegistry` | `agent/skills/skill_registry.ts` | 技能注册表：register/execute/validatePermissions，safe/privileged 权限 |
 | `StateMutationEngine` | `agent/core/state_mutation_engine.ts` | SSOT 变更权威：7 种突变类型、±0.05 clamp 校验、批量 apply |
 | `MutationQueue` | `agent/core/mutation_queue.ts` | 突变缓冲区：add/dedup（合并重复）/sort（优先级）/flush（批量提交） |
+| `InlinePredictPlugin` | `components/inline-predict.ts` | CM6 ViewPlugin：debounce 触发、Spark Lite API 调用、幽灵文本 Decoration.widget、前缀匹配裁剪 |
+| `PredictionWidget` | `components/inline-predict.ts` | CM6 WidgetType：渲染半透明斜体幽灵文本 |
+| `RunBtnWidget` | `components/code-runner-editor.ts` | CM6 WidgetType：代码块行尾 ▶ 按钮，点击执行 |
+| `OutputWidget` | `components/code-runner-editor.ts` | CM6 WidgetType：block-level 输出渲染 |
+| `CodeRunner` (共享引擎) | `components/code-runner.ts` | `executeCode(lang, code)` + `renderOutput()` 纯逻辑，被两个入口共用 |
 
 ### 组件架构
 
@@ -146,6 +155,8 @@ LlmWikiComponent 的 agent 逻辑全部委托给 `AgentOrchestrator`（`src/agen
 - **LLM Wiki** (`id: "llmwiki"`)：用户提供 DeepSeek API Key（存储在 macOS Keychain 中），插件读取 vault 笔记 + 待办 + 日程构建知识库（karpathy 方法论：Raw Sources → Wiki → Schema 三层架构）。支持与知识库对话（Agent 模式，含 `get_current_time`、`get_todos`、`get_todo_stats` 工具调用）。对话记录持久化到 `chat-log.md`，维护时自动消化并更新 `concepts/用户画像.md`。每日 13:00 自动维护，也可手动触发。默认未添加
 - **Wiki 图谱** (`id: "wikigraph"`)：Canvas 2D 渲染 LLM Wiki 关系图谱。解析 wiki 目录（summaries/concepts/index/overview）和源笔记，提取 [[wikilinks]] 构建节点和边（4 种类型着色：橙/绿/蓝/紫）。Fruchterman-Reingold 力导向布局（斥力/引力等比 strength=0.12），拖拽节点、滚轮缩放、平移、点击打开文件，稳定后自动停止物理循环。所有参数通过 sizeScale 动态适配视口。默认未添加
 - **应用启动器** (`id: "applauncher"`)：macOS 应用启动面板，emoji 图标网格展示。点击后 `open -a` 启动应用，AppleScript 自动定位应用窗口到卡片屏幕位置（`activate` + `set position/size`），实现"视觉嵌入"效果。启动后卡片显示运行状态，支持 📍 重新对齐、✕ 关闭应用。默认预置 VS Code、终端、Chrome、访达等 8 个应用，可自定义添加（名称/图标/AppleScript 名称/启动命令）。默认未添加
+- **内联预测** (`id: "inlinepredict"`)：编辑器中输入时，获取光标前当前段落文本，发送星火 Spark Lite API 预测后续内容，以半透明斜体幽灵文本显示在光标后。前缀匹配裁剪（用户输入匹配时只显示剩余部分），→ 右键接受，输入偏离时消失。CM6 ViewPlugin + StateField 实现，适用于所有 Markdown 编辑器。`requestUrl` 绕过 CORS。默认未添加
+- **代码运行** (`id: "coderunner"`)：笔记中代码块可点击运行，结果显示在代码块下方终端风格区域。支持 Python/JavaScript/Bash/C/C++，解释型直接 `exec`、编译型写临时文件编译运行。阅读视图用 `registerMarkdownCodeBlockProcessor`（**会替换默认渲染，必须自行渲染代码块内容**），实时预览用 CM6 ViewPlugin + Decoration.widget。10s 超时，输出截断 5000 字符。默认未添加
 
 ### 卡片系统
 
@@ -171,7 +182,7 @@ LlmWikiComponent 的 agent 逻辑全部委托给 `AgentOrchestrator`（`src/agen
 - `renderTimerPicker(field, label, max, cur)` 生成 H/M/S 滚动选择器 HTML，消除三份重复模板
 - `initTimerDisplay` 的 outside-click 监听用存储 handler 引用 + removeEventListener 防止重复绑
 - 昨日复盘：`syncTodoToToday(id)` 逐项同步，`syncAllYesterday()` 一键同步全部，直接修改 `todo.date` 并刷新三个面板
-- 超级桌面多实例：`desktopCurrentPaths: string[]` 为非持久化导航状态，`desktopFolders: string[]` / `desktopNames: string[]` 持久化在 settings 中，`addDesktopInstance()` / `removeDesktopInstance(i)` 增删实例后调用 `render()` 重建 DOM
+- 超级桌面多实例：`desktopCurrentPaths: string[]` 持久化在 settings 中，每次导航自动保存。`desktopFolders: string[]` / `desktopNames: string[]` 同样持久化。`addDesktopInstance()` / `removeDesktopInstance(i)` 同步维护三个数组后调用 `render()` 重建 DOM。view.ts 初始化时做长度对齐 guard 兼容旧数据
 - 侧边栏：作为 container 直接子元素（非 `#homepage-content` 子元素），`position: absolute` + 动态 `top = header.offsetHeight` 使其固定在 header 下方不随内容滚动。展开宽度 236px（刚好容纳 3 个 64px 组件图标横向排列）。展开时点击 overlay 自动关闭
 - TodoItem 新增可选字段 `startTime?: string` / `endTime?: string`（"HH:MM"），兼容旧数据。`TodoAddModal` 新增时间选择器（`<input type="time">`），`addTodo` 签名改为 5 参数
 - 待办列表甘特图：`renderGanttView()` 以 `HOUR_H=40` + `STRIP_W=5` 细线 + 右侧文字展示，`parseMinutes()` 解析时间字符串。时间重叠的待办通过贪心泳道分配算法（按开始时间排序→分配非重叠 lane→平分宽度）避免文字叠压，`getWeekRange()` / `getMonthRange()` 计算周/月范围
@@ -179,6 +190,10 @@ LlmWikiComponent 的 agent 逻辑全部委托给 `AgentOrchestrator`（`src/agen
 - 所有卡片 wrapper 必须在 `#homepage-content` 内部（`position: relative`），否则不跟随滚动且碰撞检测感知不到
 - `getOtherCardBounds()` 用 `[data-component-wrapper]` 属性选择器选中所有卡片，排除自身并跳过 `!el.style.left` 的未定位卡片。`data-component-wrapper="true"` 在 render() 中统一添加到各 wrapper div
 - pointermove 拖拽时，`constrainNoOverlap` 可能把卡片推出边界（如 y=−252），`Math.max(0, y)` 裁切后可能仍重叠。因此 pointermove 做了 constrain+clamp 循环（最多 5 次），直到位置稳定
+- 卡片拖拽边界：`getSidebarWidth()` 实时读取侧边栏宽度（28px/236px），`maxX` 计算中减去侧边栏宽度防止卡片拖到侧边栏下方
+- `registerMarkdownCodeBlockProcessor` 会**完全替换**该语言的默认渲染，必须自行创建 `<pre><code>` 结构，否则代码块空白
+- 内联预测使用 `requestUrl`（Obsidian 内置 API）而非 `fetch`，绕过 `app://obsidian.md` 的 CORS 限制
+- 星火 Spark Lite HTTP API：端点 `https://spark-api-open.xf-yun.com/v1/chat/completions`，模型名 `lite`，认证 `Bearer apiKey:apiSecret`（冒号拼接），**不支持 system 角色**
 
 ### Agent 架构（5 层认知系统）
 
@@ -366,6 +381,10 @@ vault 中安装了 `hot-reload` 插件，需要在 homepage 插件目录有 `.ho
 12. **学习模式 Bilibili 播放器无倍速控制：** ✅ 已解决（2026-07-02）— Bilibili 嵌入式播放器在第三方 iframe 中可能加载精简模式。修复：embed URL 增加 `as_wide=1&high_quality=1&danmaku=0` 参数启用完整播放器，iframe 加 `referrerpolicy="origin"`。
 13. **DeepSeek 纯文本工具调用泄漏：** ✅ 已解决（2026-07-04）— DeepSeek 在 system prompt 被告知"拥有工具调用能力"但未收到 `tools` 参数时，会在回复中用纯文本模拟工具调用（如"工具调用\\nadd_todos"）。三层修复：(1) `stripToolCallText()` 扩展到匹配纯文本模式 + 行尾孤立工具名；(2) System prompt 移除"拥有工具调用能力"，改为"工具已在后台自动执行，不要模拟函数调用"；(3) `ToolDecision` 新增 `tool_args` 字段，LLM 提取结构化参数 → `executeToolLocal` 正确执行，不再因空参数失败而触发 LLM 的"补救式模拟"。
 14. **Agent 缺少 delete_todo 工具：** ✅ 已解决（2026-07-04）— `executeToolLocal` 没有 `delete_todo` case、AGENT_TOOLS 未定义、ToolDecisionPolicy 未注册、OrchestratorConfig 未接线。修复：新增完整链路，`delete_todo` 支持文本关键词/ID/时间段三层匹配，`mark_done: true` 可标记完成而非删除，匹配失败时返回可选列表供 LLM 建议。
+15. **超级桌面导航状态丢失：** ✅ 已解决（2026-07-04）— `DesktopComponent.currentPaths` 为内存数组，每次 `view.render()` 重建组件时从 `desktopFolders` 重新初始化，导航到子文件夹后刷新即丢失。修复：新增 `desktopCurrentPaths: string[]` 到 `HomepageSettings`，所有读写改为 `settings.desktopCurrentPaths`，`addInstance`/`removeInstance` 同步维护。
+16. **内联预测 CORS 被拒：** ✅ 已解决（2026-07-04）— Obsidian 渲染进程 `fetch` 受 CORS 限制，`app://obsidian.md` 源被拒绝。修复：改用 Obsidian 内置 `requestUrl` API，走 Electron 网络层绕过 CORS。
+17. **内联预测 API 401/模型错误：** ✅ 已解决（2026-07-04）— (1) 星火 HTTP API 认证需要 `apiKey:apiSecret` 拼接格式，非单独 apiKey；(2) 模型名为 `lite` 非 `general`；(3) Spark Lite 不支持 `role: system`，需合并进 user message。修复：新增 `getAuthKey()` 自动检测旧格式并拼接 APISecret。
+18. **代码运行阅读视图空白：** ✅ 已解决（2026-07-05）— `registerMarkdownCodeBlockProcessor` 替换了默认渲染，但处理器内未自行渲染代码块内容（只 `return` 或找不存在的 `<pre>`）。修复：始终创建 `<pre><code class="language-xxx">` 结构，组件启用时才附加 Run 按钮。
 
 ## Python Agent Framework 重建
 

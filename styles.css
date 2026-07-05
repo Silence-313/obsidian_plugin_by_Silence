@@ -5,3 +5,57 @@
 .timer-picker-scroll::-webkit-scrollbar {
   display: none;
 }
+
+/* Inline prediction ghost text */
+.inline-prediction-ghost {
+  color: var(--text-faint);
+  opacity: 0.35;
+  pointer-events: none;
+  user-select: none;
+  font-style: italic;
+}
+
+/* Code runner button (reading view) */
+.code-runner-btn {
+  position: absolute;
+  top: 6px;
+  left: 8px;
+  z-index: 1;
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  border: none;
+  background: var(--background-modifier-hover);
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+  opacity: 0.45;
+  transition: opacity 0.15s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  line-height: 1;
+}
+.code-runner-wrap:hover .code-runner-btn {
+  opacity: 1;
+}
+.code-runner-btn:hover {
+  background: var(--interactive-accent);
+  color: #fff;
+}
+.code-runner-btn.running {
+  opacity: 1;
+  background: var(--interactive-accent);
+  color: #fff;
+  animation: code-runner-pulse 0.8s ease-in-out infinite;
+}
+@keyframes code-runner-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+/* Code runner button (live preview, inside cm) */
+.cm-run-btn {
+  vertical-align: middle;
+}

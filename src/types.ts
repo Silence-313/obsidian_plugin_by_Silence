@@ -56,6 +56,12 @@ export interface ChatMessage {
   timestamp: number;
 }
 
+export interface InlinePredictSettings {
+  apiKey: string;
+  debounceMs: number;
+  contextChars: number;
+}
+
 export interface HomepageSettings {
   userName: string;
   todos: TodoItem[];
@@ -63,7 +69,9 @@ export interface HomepageSettings {
   cardLayouts: Record<string, CardLayout>;
   desktopFolders: string[];
   desktopNames: string[];
+  desktopCurrentPaths: string[];
   studyMode: StudySettings;
   llmWiki: LlmWikiSettings;
   appLauncher: AppLauncherSettings;
+  inlinePredict: InlinePredictSettings;
 }

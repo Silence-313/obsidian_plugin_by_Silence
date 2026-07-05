@@ -186,5 +186,53 @@ export class HomepageSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           })
       );
+
+    // --- Inline Predict Section ---
+    containerEl.createEl("h3", { text: "内联预测" });
+
+    new Setting(containerEl)
+      .setName("启用方式")
+      .setDesc("在首页侧边栏中，将「内联预测」组件拖入「已添加组件」即可开启。预测仅在编辑器中生效，不会在首页渲染卡片。");
+
+    new Setting(containerEl)
+      .setName("API Key")
+      .setDesc("星火 Spark Lite API Key，格式为 apiKey:apiSecret（用冒号拼接）")
+      .addText((text) =>
+        text
+          .setPlaceholder("d2f787c2...:MDIxZGFk...")
+          .setValue(this.plugin.settings.inlinePredict.apiKey)
+          .onChange(async (value) => {
+            this.plugin.settings.inlinePredict.apiKey = value.trim();
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("延迟 (ms)")
+      .setDesc("停止输入后多久触发预测，范围 200-2000ms")
+      .addSlider((slider) =>
+        slider
+          .setLimits(200, 2000, 50)
+          .setValue(this.plugin.settings.inlinePredict.debounceMs)
+          .setDynamicTooltip()
+          .onChange(async (value) => {
+            this.plugin.settings.inlinePredict.debounceMs = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("上下文长度")
+      .setDesc("发送给 AI 的光标前文字数量，范围 200-4000")
+      .addSlider((slider) =>
+        slider
+          .setLimits(200, 4000, 100)
+          .setValue(this.plugin.settings.inlinePredict.contextChars)
+          .setDynamicTooltip()
+          .onChange(async (value) => {
+            this.plugin.settings.inlinePredict.contextChars = value;
+            await this.plugin.saveSettings();
+          })
+      );
   }
 }

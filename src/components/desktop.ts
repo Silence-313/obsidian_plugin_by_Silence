@@ -5,7 +5,6 @@ import { DesktopFolderModal } from "../modals";
 
 export class DesktopComponent {
   private view: HomepageView;
-  currentPaths: string[] = [];
 
   constructor(view: HomepageView) {
     this.view = view;
@@ -67,7 +66,7 @@ export class DesktopComponent {
     const backBtn = this.view.containerEl.querySelector(`#desktop-back-btn-${i}`) as HTMLElement;
     if (!grid) return;
 
-    let cur = this.currentPaths[i] ?? "";
+    let cur = this.view.plugin.settings.desktopCurrentPaths[i] ?? "";
     const root = this.view.plugin.settings.desktopFolders[i] ?? "";
 
     if (pathDisplay) pathDisplay.textContent = cur || "/";
@@ -159,7 +158,7 @@ export class DesktopComponent {
   }
 
   private openFile(i: number, filename: string) {
-    const cur = this.currentPaths[i] ?? "";
+    const cur = this.view.plugin.settings.desktopCurrentPaths[i] ?? "";
     const relativePath = cur ? `${cur}/${filename}` : filename;
     if (filename.endsWith(".md")) {
       this.view.app.workspace.openLinkText(relativePath, "", false);
@@ -180,22 +179,22 @@ export class DesktopComponent {
   }
 
   private navigateToFolder(i: number, subfolder: string) {
-    const cur = this.currentPaths[i] ?? "";
-    this.currentPaths[i] = cur ? `${cur}/${subfolder}` : subfolder;
+    const cur = this.view.plugin.settings.desktopCurrentPaths[i] ?? "";
+    this.view.plugin.settings.desktopCurrentPaths[i] = cur ? `${cur}/${subfolder}` : subfolder;
     this.renderContents(i);
   }
 
   private navigateBack(i: number) {
-    const cur = this.currentPaths[i] ?? "";
+    const cur = this.view.plugin.settings.desktopCurrentPaths[i] ?? "";
     const root = this.view.plugin.settings.desktopFolders[i] ?? "";
     if (cur === root) return;
     const parts = cur.split("/");
     parts.pop();
     const parent = parts.join("/");
     if (root && !parent.startsWith(root)) {
-      this.currentPaths[i] = root;
+      this.view.plugin.settings.desktopCurrentPaths[i] = root;
     } else {
-      this.currentPaths[i] = parent;
+      this.view.plugin.settings.desktopCurrentPaths[i] = parent;
     }
     this.renderContents(i);
   }
@@ -205,14 +204,14 @@ export class DesktopComponent {
     new DesktopFolderModal(this.view.app, root, (newPath) => {
       this.view.plugin.settings.desktopFolders[i] = newPath;
       this.view.plugin.saveSettings().catch(console.error);
-      this.currentPaths[i] = newPath;
+      this.view.plugin.settings.desktopCurrentPaths[i] = newPath;
       this.renderContents(i);
     }).open();
   }
 
   private createFolder(i: number) {
     this.insertInlineEditor(i, "folder", "📁", "新建文件夹", async (name) => {
-      const cur = this.currentPaths[i] ?? "";
+      const cur = this.view.plugin.settings.desktopCurrentPaths[i] ?? "";
       const path = cur ? `${cur}/${name}` : name;
       await this.view.app.vault.createFolder(path);
     });
@@ -220,7 +219,7 @@ export class DesktopComponent {
 
   private createFile(i: number) {
     this.insertInlineEditor(i, "file", "📝", "新建文件.md", async (name) => {
-      const cur = this.currentPaths[i] ?? "";
+      const cur = this.view.plugin.settings.desktopCurrentPaths[i] ?? "";
       const filename = name.endsWith(".md") ? name : `${name}.md`;
       const path = cur ? `${cur}/${filename}` : filename;
       await this.view.app.vault.create(path, "");
@@ -363,7 +362,7 @@ export class DesktopComponent {
   }
 
   private async deleteItem(i: number, name: string) {
-    const cur = this.currentPaths[i] ?? "";
+    const cur = this.view.plugin.settings.desktopCurrentPaths[i] ?? "";
     const relativePath = cur ? `${cur}/${name}` : name;
     try {
       const file = this.view.app.vault.getAbstractFileByPath(relativePath);
@@ -379,6 +378,7 @@ export class DesktopComponent {
   addInstance() {
     this.view.plugin.settings.desktopFolders.push("");
     this.view.plugin.settings.desktopNames.push("");
+    this.view.plugin.settings.desktopCurrentPaths.push("");
     this.view.plugin.saveSettings().catch(console.error);
     this.view.render();
   }
@@ -387,6 +387,7 @@ export class DesktopComponent {
     if (this.view.plugin.settings.desktopFolders.length <= 1) return;
     this.view.plugin.settings.desktopFolders.splice(i, 1);
     this.view.plugin.settings.desktopNames.splice(i, 1);
+    this.view.plugin.settings.desktopCurrentPaths.splice(i, 1);
     this.view.plugin.saveSettings().catch(console.error);
     this.view.render();
   }
