@@ -43,6 +43,7 @@ export interface OrchestratorConfig {
   replaceInNote?: (oldText: string, newText: string) => boolean;
   appendToNote?: (text: string) => boolean;
   getNoteSelection?: () => string;
+  deleteFromNote?: (text: string) => boolean;
 }
 
 export interface ToolCallResult {
@@ -335,6 +336,20 @@ const AGENT_TOOLS = [
       },
     },
   },
+  {
+    type: "function" as const,
+    function: {
+      name: "delete_from_note",
+      description: "从用户当前编辑的笔记中删除指定文本。text 必须精确匹配笔记中的某段内容。",
+      parameters: {
+        type: "object" as const,
+        properties: {
+          text: { type: "string", description: "要删除的文本内容（需精确匹配）" },
+        },
+        required: ["text"],
+      },
+    },
+  },
 ];
 
 // ── Orchestrator ────────────────────────────────────────────
@@ -600,10 +615,9 @@ export class AgentOrchestrator {
             "web_search", "get_todos", "add_todos", "delete_todo", "get_todo_stats",
             "get_current_time", "list_wiki_files", "read_wiki_file", "write_wiki_file",
             "delete_wiki_file", "search_wiki",
-            // Note editing tools (only available when editor callbacks are provided)
-            ...(this.config.insertIntoNote ? ["insert_into_note" as const] : []),
-            ...(this.config.replaceInNote ? ["replace_in_note" as const] : []),
-            ...(this.config.appendToNote ? ["append_to_note" as const] : []),
+            // Note editing tools: only get_note_selection is preemptive (read-only).
+            // insert/append/replace/delete are handled by post-response markers
+            // because they need LLM-generated content, not user-query-extracted args.
             ...(this.config.getNoteSelection ? ["get_note_selection" as const] : []),
           ],
         availableSkills: this.skillRegistry.getAll(),
@@ -717,7 +731,33 @@ export class AgentOrchestrator {
       : (proactiveSkillResult && !proactiveSkillResult.success
         ? `\n## 技能执行失败\n${proactiveSkillResult.error}\n`
         : "");
-    const systemPrompt = this.buildSystemPrompt(memoryContext) + toolResultSection + skillResultSection;
+    let systemPrompt = this.buildSystemPrompt(memoryContext) + toolResultSection + skillResultSection;
+
+    // If note editing callbacks are available, append edit-marker instructions
+    if (this.config.insertIntoNote || this.config.appendToNote || this.config.replaceInNote) {
+      systemPrompt += `
+
+## 笔记编辑能力
+你拥有直接编辑用户当前笔记的能力。如需插入/追加/替换内容，在回复中使用以下标记格式（会被自动执行并从显示中移除）：
+
+- 插入内容到光标位置：\`\`\`note-insert\\n内容\\n\`\`\`
+- 追加内容到笔记末尾：\`\`\`note-append\\n内容\\n\`\`\`
+- 替换笔记中的文本：\`\`\`note-replace old=要被替换的原文本\\n新内容\\n\`\`\`
+- 删除笔记中的文本：\`\`\`note-delete old=要删除的文本\\n\`\`\`（old=参数指定要删除的内容）
+
+使用规则：
+- 当用户要求"帮我写一段..."、"总结并添加到笔记"、"插入代码"等时，先生成内容，再用标记包裹
+- 仅当用户明确要求修改笔记时才使用，不要主动编辑
+- 标记块会被自动执行并从回复中移除，用户看不到它们，你也不需要解释标记的存在
+- 标记块之外的文字会正常显示给用户，在这里说明你做了什么（如"已在笔记中追加总结"）
+- 示例——用户说"帮我写个总结插入到光标处"，你回复：
+  以下是笔记总结，已为你插入到光标处：
+
+  \`\`\`note-insert
+  ## 总结
+  核心要点是...
+  \`\`\``;
+    }
 
     // 5. Build messages for LLM
     const messages = this.buildLLMMessages(systemPrompt, chatHistory, sanitizedText);
@@ -1548,6 +1588,14 @@ ${memory.conceptReasoning}
         if (!this.config.getNoteSelection) return JSON.stringify({ error: "当前环境不支持获取笔记选区（无活跃编辑器）" });
         const selection = this.config.getNoteSelection();
         return JSON.stringify({ hasSelection: selection.length > 0, selection, length: selection.length }, null, 2);
+      }
+
+      case "delete_from_note": {
+        if (!this.config.deleteFromNote) return JSON.stringify({ error: "当前环境不支持编辑笔记（无活跃编辑器）" });
+        const text = (args.text || "") as string;
+        if (!text) return JSON.stringify({ error: "text 不能为空" });
+        const ok = this.config.deleteFromNote(text);
+        return JSON.stringify({ success: ok, action: ok ? "deleted" : "not_found", textLength: text.length }, null, 2);
       }
 
       default:

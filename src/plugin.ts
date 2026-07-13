@@ -244,12 +244,19 @@ export default class HomepagePlugin extends Plugin {
       this.noteAssistant.restore();
     }
 
-    // Update current note name
+    // Update current note name + trigger summary on note change
     const activeFile = this.app.workspace.getActiveFile();
     if (activeFile) {
       this.noteAssistant.updateNoteInfo(activeFile.name);
+      // Silently summarize when switching to a new note
+      if (activeFile.path !== this._lastNoteAssistantPath) {
+        this._lastNoteAssistantPath = activeFile.path;
+        this.noteAssistant.summarizeCurrentNote();
+      }
     }
   }
+
+  private _lastNoteAssistantPath = "";
 
   showNoteAssistant() {
     if (!this.noteAssistant || this.noteAssistant.isDestroyed()) {

@@ -44,6 +44,11 @@ export interface ToolDecisionResult {
  * It MUST only decide tool usage and output valid JSON.
  */
 function buildDecisionPrompt(ctx: ToolDecisionContext): string {
+  const today = new Date();
+  const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+  const weekdays = ["星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"];
+  const todayLabel = `${todayStr} (${weekdays[today.getDay()]})`;
+
   const toolList = ctx.availableTools
     .map(t => {
       switch (t) {
@@ -53,6 +58,11 @@ function buildDecisionPrompt(ctx: ToolDecisionContext): string {
         case "delete_todo": return `  - delete_todo: 删除或完成待办事项。tool_args: {"text":"关键词"}模糊匹配内容/时间, {"id":"xxx"}精确匹配, {"startTime":"HH:MM","endTime":"HH:MM"}按时间段匹配, 可选"date":"YYYY-MM-DD"限定日期, "mark_done":true标记完成`;
         case "get_todo_stats": return `  - get_todo_stats: 获取待办统计概览（完成率、分布等）`;
         case "get_current_time": return `  - get_current_time: 获取当前精确时间和日期`;
+        case "insert_into_note": return `  - insert_into_note: 在用户当前编辑的笔记光标位置插入文本。tool_args: {"text":"要插入的内容"}。用于补全段落、添加注释、插入代码块等需要直接修改笔记的操作`;
+        case "replace_in_note": return `  - replace_in_note: 在用户当前笔记中查找并替换指定文本。tool_args: {"oldText":"要被替换的原文本（需精确匹配）","newText":"替换后的新文本"}。用于修改错误、改写段落等`;
+        case "append_to_note": return `  - append_to_note: 在用户当前笔记末尾追加文本。tool_args: {"text":"要追加的内容"}。用于添加新章节、总结、补充说明等`;
+        case "get_note_selection": return `  - get_note_selection: 获取用户在笔记中当前选中的文本。用于了解用户正在关注的具体段落或代码`;
+        case "delete_from_note": return `  - delete_from_note: 从用户当前笔记中删除指定文本。tool_args: {"text":"要删除的文本（需精确匹配）"}。用于删除错误内容、移除冗余段落等`;
         default: return `  - ${t}`;
       }
     })
@@ -63,6 +73,9 @@ function buildDecisionPrompt(ctx: ToolDecisionContext): string {
     : "  (无可用技能)";
 
   return `你是工具和技能使用决策器。你的唯一任务是判断是否需要调用工具或技能来回答用户问题。
+
+## 重要：今天是 ${todayLabel}
+用户说的"今天"就是指 ${todayStr}，不要使用其他日期。
 
 ## 可用工具（外部世界）
 ${toolList}
@@ -76,6 +89,10 @@ ${skillList}
 - 用户询问"我在哪里"、"当前位置"、"附近有什么" → get_current_location
 
 ### 使用工具：
+- 用户要求修改、编辑、插入、添加内容到当前笔记 → insert_into_note / append_to_note
+- 用户要求删除、移除、清除笔记中的内容 → delete_from_note
+- 用户要求改写、修正、替换笔记中的某段内容 → replace_in_note
+- 用户要求查看或理解选中的文本 → get_note_selection
 - 用户问题需要实时信息、最新数据、外部事实 → web_search
 - 用户询问待办、任务、日程 → get_todos 或 get_todo_stats
 - 用户要添加待办、安排任务 → add_todos
@@ -111,9 +128,10 @@ ${ctx.userQuery}
 - 仅当 use_tool=true 且该工具需要参数时才填写 tool_args
 - 从用户输入中提取实际值填入
 - 不需要参数的工具（如 get_current_time）填 null
-- add_todos 示例：{"date":"2026-07-04","todos":[{"text":"LeetCode","startTime":"09:30","endTime":"10:30"}]}
+- add_todos 示例：{"date":"${todayStr}","todos":[{"text":"LeetCode","startTime":"09:30","endTime":"10:30"}]}
 - web_search 示例：{"query":"最新AI新闻"}
-- get_todos 示例：{"date":"2026-07-04"}`;
+- get_todos 示例：{"date":"2026-07-04"}
+- insert_into_note 示例：{"text":"## 总结\\n\\n以上内容的核心观点是..."}`;
 }
 
 // ── Policy ──────────────────────────────────────────────────
@@ -233,6 +251,9 @@ export class ToolDecisionPolicy {
     const reason = /"reason"\s*:\s*"([^"]*)"/i.exec(raw);
     const rewrite = /"query_rewrite"\s*:\s*"([^"]*)"/i.exec(raw);
 
+    // Brace-counting extraction for nested tool_args object
+    const toolArgs = this.extractNestedJson(raw, "tool_args");
+
     return this.validateAndNormalize({
       use_tool: useTool ? useTool[1] === "true" : false,
       tool_name: toolName?.[1] || null,
@@ -241,6 +262,7 @@ export class ToolDecisionPolicy {
       confidence: confidence ? parseFloat(confidence[1]) : 0.6,
       reason: reason?.[1] || "Fallback parse from LLM response",
       query_rewrite: rewrite?.[1] || undefined,
+      tool_args: toolArgs,
     }, ctx);
   }
 
@@ -257,6 +279,42 @@ export class ToolDecisionPolicy {
     }
 
     return null;
+  }
+
+  /** Brace-counting extraction of a nested JSON object by key name. */
+  private extractNestedJson(raw: string, key: string): Record<string, unknown> | undefined {
+    const keyPattern = new RegExp(`"${key}"\\s*:\\s*`, "i");
+    const keyMatch = keyPattern.exec(raw);
+    if (!keyMatch) return undefined;
+
+    const startIdx = keyMatch.index + keyMatch[0].length;
+    const rest = raw.slice(startIdx);
+    if (!rest.startsWith("{")) return undefined;
+
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let i = 0; i < rest.length; i++) {
+      const ch = rest[i];
+      if (escaped) { escaped = false; continue; }
+      if (ch === "\\") { escaped = true; continue; }
+      if (ch === '"') { inString = !inString; continue; }
+      if (inString) continue;
+      if (ch === "{") { depth++; continue; }
+      if (ch === "}") {
+        depth--;
+        if (depth === 0) {
+          try {
+            const parsed = JSON.parse(rest.slice(0, i + 1));
+            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+              return parsed as Record<string, unknown>;
+            }
+          } catch { /* unparseable */ }
+          return undefined;
+        }
+      }
+    }
+    return undefined;
   }
 
   // ── Validation & Normalization ────────────────────────────
@@ -340,6 +398,9 @@ export class ToolDecisionPolicy {
     const needsSearch = /搜索|查一下|搜一下|最新|新闻|实时|现在|今天|当前/i.test(q);
     const needsTodo = /待办|任务|添加待办|安排|日程|todo/i.test(q);
     const needsTime = /几点|几号|日期|时间|星期几/i.test(q);
+    // Note: insert/replace/append/delete tools are NOT available preemptively —
+    // they work through post-response markers (```note-insert etc.) because
+    // the content must be generated by the LLM first.
     const isQuestion = /[？?]$/.test(q) || /^(什么|怎么|如何|为什么|谁|哪里|什么时候)/i.test(q);
 
     if (needsSearch) {

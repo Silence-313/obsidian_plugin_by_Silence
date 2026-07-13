@@ -158,7 +158,7 @@ LlmWikiComponent 的 agent 逻辑全部委托给 `AgentOrchestrator`（`src/agen
 - **应用启动器** (`id: "applauncher"`)：macOS 应用启动面板，emoji 图标网格展示。点击后 `open -a` 启动应用，AppleScript 自动定位应用窗口到卡片屏幕位置（`activate` + `set position/size`），实现"视觉嵌入"效果。启动后卡片显示运行状态，支持 📍 重新对齐、✕ 关闭应用。默认预置 VS Code、终端、Chrome、访达等 8 个应用，可自定义添加（名称/图标/AppleScript 名称/启动命令）。默认未添加
 - **内联预测** (`id: "inlinepredict"`)：编辑器中输入时，获取光标前当前段落文本，发送星火 Spark Lite API 预测后续内容，以半透明斜体幽灵文本显示在光标后。前缀匹配裁剪（用户输入匹配时只显示剩余部分），→ 右键接受，输入偏离时消失。CM6 ViewPlugin + StateField 实现，适用于所有 Markdown 编辑器。`requestUrl` 绕过 CORS。默认未添加
 - **代码运行** (`id: "coderunner"`)：笔记中代码块可点击运行，结果显示在代码块下方终端风格区域。支持 Python/JavaScript/Bash/C/C++，解释型直接 `exec`、编译型写临时文件编译运行。阅读视图用 `registerMarkdownCodeBlockProcessor`（**会替换默认渲染，必须自行渲染代码块内容**），实时预览用 CM6 ViewPlugin + Decoration.widget。10s 超时，输出截断 5000 字符。默认未添加
-- **笔记助手** (`id: "noteassistant"`)：编辑 Markdown 笔记时自动出现悬浮对话窗口（`position: fixed`，非 Obsidian ItemView），可与 AI Agent 讨论笔记中的知识点。Header 栏可拖拽移动，右下角 CSS resize 缩放，`—` 最小化为右下角可拖拽 FAB 浮动按钮（💬），最小化/展开时浮窗右下角与 FAB 中心对齐实现"从按钮展开"效果。工具栏 `📄 同步` 开关控制是否将当前笔记内容注入每次提问（截断 4000 字符）。Agent 拥有 4 个笔记编辑工具：`insert_into_note`、`replace_in_note`、`append_to_note`、`get_note_selection`，可直接操作活跃编辑器内容。复用 LLM Wiki 的 DeepSeek API Key（Keychain + 明文降级 + 自动迁移）。仅在活跃 leaf 为 markdown 时显示，切换到其他视图自动最小化。默认未添加
+- **笔记助手** (`id: "noteassistant"`)：编辑 Markdown 笔记时自动出现悬浮对话窗口（`position: fixed`，非 Obsidian ItemView），可与 AI Agent 讨论知识点。Header 可拖拽移动，CSS resize 缩放，`—` 最小化为可拖拽 FAB（💬），最小化/展开时浮窗右下角与 FAB 中心对称对齐。工具栏 `📄 同步` 开关注入笔记内容到提问上下文，`📝 总结` 按钮生成结构化总结写入笔记末尾（自动检测替换已有总结）。Agent 通过标记代码块（note-insert/append/replace/delete）直接编辑笔记，打开笔记时静默生成概要。复用 LLM Wiki API Key。仅在活跃 markdown leaf 时显示，切换视图自动最小化。默认未添加
 
 ### 卡片系统
 
@@ -413,7 +413,9 @@ vault 中安装了 `hot-reload` 插件，需要在 homepage 插件目录有 `.ho
 - **FAB 悬浮球**：44×44px 圆形 `position: fixed`，click 展开、pointer 拖拽（保留 right/bottom 偏移存储，拖拽后不丢失位置）。hover `scale(1.1)`。
 - **最小化/展开对称**：`minimize()` 将 FAB 中心置于浮窗右下角（`fabCenter = (floatX+floatW, floatY+floatH)`）；`restore()` 将浮窗右下角对齐 FAB 中心（`floatX = fabCenterX - floatW`），产生"从按钮展开"效果。
 - **API Key**：3 层加载 — Keychain → 明文 `settings.llmWiki.apiKey`（自动迁移到 Keychain）→ 空。与 LLM Wiki 共享同一 Keychain service name。
-- **笔记同步**：`syncNoteContent` 开启时，`handleSend()` 通过 `app.vault.read(activeFile)` 读取笔记内容（截断 4000 字符），用 markdown code fence 包裹后注入用户消息。开关状态持久化到 `settings.noteAssistant.syncNoteContent`。
-- **笔记编辑工具**：4 个新 Agent 工具（`insert_into_note`/`replace_in_note`/`append_to_note`/`get_note_selection`），通过 `OrchestratorConfig` 的可选回调注入——`NoteAssistantComponent.getOrCreateOrchestrator()` 传入编辑器操作方法，`executeToolLocal()` 在无回调时返回"当前环境不支持编辑笔记"。仅在笔记助手场景可用，LLM Wiki 不受影响。
-- **`OrchestratorConfig` 新增字段**：`getActiveNoteContent?`、`insertIntoNote?`、`replaceInNote?`、`appendToNote?`、`getNoteSelection?`，均为可选。`availableTools` 通过 spread 语法条件性包含笔记工具。
-- **无关闭按钮**：Header 仅保留 `—` 最小化按钮，无 `✕` 关闭。切换到非 markdown 视图时自动最小化，组件移除时 `destroy()` 清理所有 DOM。
+- **笔记同步**：`syncNoteContent` 开启时，`handleSend()` 通过 `editor.getValue()` 从编辑器缓冲区读取笔记内容（而非 `vault.read()` 读磁盘——确保未保存编辑和 Agent 自己的修改可见），用 markdown code fence 包裹后注入用户消息。超长笔记用头+尾智能截断（前 1500 + 后 2500 字符，中间省略）而非仅截头部。
+- **笔记编辑（标记后处理模式）**：`insert_into_note`/`replace_in_note`/`append_to_note`/`delete_from_note` 四个工具仅通过 LLM 回复中的标记代码块（````note-insert````/````note-append````/````note-replace old=xxx````/````note-delete old=xxx````）触发，由 `processNoteEdits()` 扫描回复并执行编辑器操作，`stripEditMarkers()` 从显示中剥离标记。**不从预执行路径调用**——因为内容需 LLM 先生成，`ToolDecisionPolicy` 的 `availableTools` 中仅保留 `get_note_selection`（只读）。`executeToolLocal` 仍保留这些工具的 case（供未来其他场景使用），但不在预执行列表中。
+- **`OrchestratorConfig` 新增字段**：`getActiveNoteContent?`、`insertIntoNote?`、`replaceInNote?`、`appendToNote?`、`getNoteSelection?`、`deleteFromNote?`，均为可选。`availableTools` 中仅 `get_note_selection` 条件性包含。
+- **静默笔记总结**：`plugin.ts` 的 `handleNoteAssistantVisibility()` 追踪 `_lastNoteAssistantPath`，切换到新笔记时自动调用 `summarizeCurrentNote()`——发送总结 prompt 给 Agent，结果以 `📝 **笔记概要**: ...` 消息插入聊天顶部（`assistant` 角色，参与对话历史），最多保留 3 条。笔记 ≤3000 字符全文发送，>3000 字符按间隔采样（取 1000 字符 / 跳 1000 字符循环），用 `\n\n...\n\n` 拼接。
+- **📝 总结按钮**：Header 栏按钮，`summarizeToNote()` 读取编辑器全文（无截断），正则检测 `## 总结`/`## AI 总结` 等已有总结段落——存在则截掉后基于剩余内容生成新总结替换，不存在则追加 `---\n## AI 总结\n\n{内容}` 到笔记末尾。结构化输出（核心主题/关键要点/整体概要）。
+- **无关闭按钮**：Header 仅保留 `📄 同步`、`📝 总结`、`🗑 清空`、`—` 最小化按钮，无 `✕` 关闭。切换到非 markdown 视图时自动最小化。

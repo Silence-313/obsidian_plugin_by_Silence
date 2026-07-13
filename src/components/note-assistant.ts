@@ -151,6 +151,161 @@ export class NoteAssistantComponent {
     }
   }
 
+  /** Silently summarize the current note so the agent has context. */
+  async summarizeCurrentNote() {
+    const orch = this.getOrCreateOrchestrator();
+    if (!orch) return;
+
+    const content = this.getActiveNoteContentSync();
+    if (!content || content.length < 50) return; // skip tiny/empty notes
+
+    // Build note content for summary: if ≤ 3000 chars, use all; otherwise
+    // transmit 1000-char chunks at 1000-char intervals (sparse sampling).
+    let noteSample: string;
+    if (content.length <= 3000) {
+      noteSample = content;
+    } else {
+      const chunks: string[] = [];
+      for (let i = 0; i < content.length; i += 2000) {
+        chunks.push(content.slice(i, i + 1000));
+      }
+      noteSample = chunks.join("\n\n...\n\n");
+    }
+
+    const summaryPrompt = `请用 2-3 句话简洁总结以下笔记的核心内容和主题，不需要详细列举，只给出整体概要：\n\n\`\`\`markdown\n${noteSample}\n\`\`\``;
+
+    try {
+      this.showActivity("正在理解笔记内容...");
+      const { response } = await orch.process(
+        summaryPrompt,
+        [],
+        undefined, // no streaming for summary
+        undefined, // no activity during summary
+      );
+      this.clearActivity();
+
+      // Insert summary as the first chat message so both user and agent see it.
+      // Using assistant role means it persists (not cleared like activity) and
+      // also feeds into the conversation history for future LLM context.
+      if (response && !response.startsWith("❌")) {
+        this.chatMessages.unshift({
+          role: "assistant",
+          content: `📝 **笔记概要**: ${response}`,
+          timestamp: Date.now(),
+        });
+        // Keep chat manageable: remove old summaries if > 3
+        const summaries = this.chatMessages.filter(
+          m => m.role === "assistant" && m.content.startsWith("📝 **笔记概要**")
+        );
+        while (summaries.length > 3) {
+          const idx = this.chatMessages.indexOf(summaries[0]);
+          if (idx >= 0) this.chatMessages.splice(idx, 1);
+          summaries.shift();
+        }
+        if (this._visible) this.render();
+      }
+    } catch {
+      this.clearActivity();
+    }
+  }
+
+  /** Generate a summary and write it to the end of the current note.
+   *  If a previous summary section exists, replace it instead of appending. */
+  async summarizeToNote() {
+    const orch = this.getOrCreateOrchestrator();
+    if (!orch) {
+      this.chatMessages.push({ role: "assistant", content: "❌ 请先在 LLM Wiki 中配置 API Key", timestamp: Date.now() });
+      this.render();
+      return;
+    }
+
+    const mdView = this.getActiveMarkdownView();
+    if (!mdView) {
+      this.chatMessages.push({ role: "assistant", content: "❌ 没有活跃的笔记编辑器", timestamp: Date.now() });
+      this.render();
+      return;
+    }
+
+    // Read full note content (no truncation — we want the complete picture)
+    let fullContent = mdView.editor.getValue();
+    if (fullContent.length < 50) {
+      this.chatMessages.push({ role: "assistant", content: "❌ 笔记内容太短，无需总结", timestamp: Date.now() });
+      this.render();
+      return;
+    }
+
+    // Check for existing summary section and strip it before sending to LLM
+    const summaryPattern = /^#{1,3}\s*(总结|AI 总结|笔记总结|Summary|概要).*$/m;
+    const summaryMatch = fullContent.match(summaryPattern);
+    let contentToSummarize = fullContent;
+    if (summaryMatch && summaryMatch.index !== undefined) {
+      contentToSummarize = fullContent.slice(0, summaryMatch.index).trimEnd();
+    }
+
+    // Build the note sample: if > 3000, use interval chunking
+    let noteSample: string;
+    if (contentToSummarize.length <= 3000) {
+      noteSample = contentToSummarize;
+    } else {
+      const chunks: string[] = [];
+      for (let i = 0; i < contentToSummarize.length; i += 2000) {
+        chunks.push(contentToSummarize.slice(i, i + 1000));
+      }
+      noteSample = chunks.join("\n\n...\n\n");
+    }
+
+    const summaryPrompt = `请为以下笔记生成一个结构化的总结，包含：
+1. 核心主题（一句话）
+2. 关键要点（3-5 个要点，用列表）
+3. 整体概要（2-3 句话）
+请用中文，Markdown 格式，不要使用表格。
+
+笔记内容：
+\`\`\`markdown
+${noteSample}
+\`\`\``;
+
+    try {
+      this.showActivity("正在生成笔记总结...");
+      const { response } = await orch.process(
+        summaryPrompt,
+        [],
+        undefined,
+        undefined,
+      );
+      this.clearActivity();
+
+      if (!response || response.startsWith("❌")) {
+        this.chatMessages.push({ role: "assistant", content: `❌ 总结生成失败`, timestamp: Date.now() });
+        this.render();
+        return;
+      }
+
+      const summarySection = `\n\n---\n\n## AI 总结\n\n${response.trim()}`;
+
+      // Remove existing summary section if present, then append new one
+      let finalContent: string;
+      if (summaryMatch && summaryMatch.index !== undefined) {
+        finalContent = fullContent.slice(0, summaryMatch.index).trimEnd() + summarySection;
+      } else {
+        finalContent = fullContent.trimEnd() + summarySection;
+      }
+
+      mdView.editor.setValue(finalContent);
+      this.chatMessages.push({
+        role: "assistant",
+        content: `✅ 已在笔记末尾${summaryMatch ? "更新" : "生成"}总结`,
+        timestamp: Date.now(),
+      });
+      this.render();
+      this.scrollChatToBottom();
+    } catch (e: any) {
+      this.clearActivity();
+      this.chatMessages.push({ role: "assistant", content: `❌ 总结失败: ${e.message}`, timestamp: Date.now() });
+      this.render();
+    }
+  }
+
   toggleSync() {
     this.plugin.settings.noteAssistant.syncNoteContent =
       !this.plugin.settings.noteAssistant.syncNoteContent;
@@ -270,6 +425,16 @@ export class NoteAssistantComponent {
         const mdView = this.getActiveMarkdownView();
         return mdView?.editor.getSelection() ?? "";
       },
+      deleteFromNote: (text) => {
+        const mdView = this.getActiveMarkdownView();
+        if (!mdView) return false;
+        const content = mdView.editor.getValue();
+        if (content.includes(text)) {
+          mdView.editor.setValue(content.replace(text, ""));
+          return true;
+        }
+        return false;
+      },
     });
 
     this.orchestrator.initialize().catch(console.error);
@@ -292,7 +457,9 @@ export class NoteAssistantComponent {
     try {
       let content = mdView.editor.getValue();
       if (content.length > 4000) {
-        content = content.slice(0, 4000);
+        content = content.slice(0, 1500)
+          + "\n\n...(中间内容已省略)...\n\n"
+          + content.slice(-2500);
       }
       return content;
     } catch {
@@ -495,6 +662,7 @@ export class NoteAssistantComponent {
           flex: 1;
         ">${this.currentNoteName ? `当前: ${escapeHtml(this.currentNoteName)}` : "无活跃笔记"}</span>
         <button id="na-sync-btn" class="${syncOn ? "active" : ""}" title="切换笔记内容同步">📄 ${syncOn ? "同步" : "不同步"}</button>
+        <button id="na-summarize-btn" title="为当前笔记生成总结并写入笔记末尾">📝 总结</button>
         <button id="na-clear-btn" title="清空对话">🗑</button>
         <button id="na-min-btn" title="最小化">—</button>
       </div>
@@ -604,6 +772,11 @@ export class NoteAssistantComponent {
     this.floatEl.querySelector("#na-clear-btn")?.addEventListener("click", () => {
       this.chatMessages = [];
       this.render();
+    });
+
+    // Summarize to note
+    this.floatEl.querySelector("#na-summarize-btn")?.addEventListener("click", () => {
+      this.summarizeToNote();
     });
 
     // Minimize
@@ -766,7 +939,15 @@ export class NoteAssistantComponent {
       this.clearActivity();
       this._streamingIdx = -1;
       const msg = this.chatMessages[this.chatMessages.length - 1];
-      if (msg && msg.role === "assistant") msg.content = response;
+      if (msg && msg.role === "assistant") {
+        // Strip note-edit marker blocks from displayed response
+        msg.content = this.stripEditMarkers(response);
+      }
+
+      // Post-processing: execute note edits from LLM response
+      await this.processNoteEdits(response);
+      // Clear any activity messages added during editing
+      this.clearActivity();
     } catch (e: any) {
       this.clearActivity();
       // Remove empty assistant bubble
@@ -796,14 +977,89 @@ export class NoteAssistantComponent {
     });
   }
 
+  /**
+   * Strip note-edit marker blocks from the LLM response so they don't
+   * appear in the displayed chat message.
+   */
+  private stripEditMarkers(text: string): string {
+    return text.replace(/```(note-insert|note-append|note-replace|note-delete)(?:\s+old=[^\n]*)?\n[\s\S]*?```/g, "").trim();
+  }
+
+  /**
+   * Post-response processing: scan LLM response for note edit markers
+   * and execute them on the active editor.
+   *
+   * Supported markers (code fences with special language tags):
+   *   ```note-insert      → insert content at cursor
+   *   ```note-append      → append content to end of note
+   *   ```note-replace     → replace oldText with content (uses oldText from fence info string)
+   */
+  private async processNoteEdits(response: string) {
+    const mdView = this.getActiveMarkdownView();
+    if (!mdView) return;
+
+    const fenceRegex = /```(note-insert|note-append|note-replace|note-delete)(?:\s+old=([^\n]*))?\n([\s\S]*?)```/g;
+    let match;
+    let editCount = 0;
+
+    while ((match = fenceRegex.exec(response)) !== null) {
+      const type = match[1];
+      const content = match[3].trim();
+      const oldText = match[2] || undefined;
+      editCount++;
+
+      try {
+        if (type === "note-insert") {
+          mdView.editor.replaceSelection(content);
+        } else if (type === "note-append") {
+          const current = mdView.editor.getValue();
+          mdView.editor.setValue(current + "\n" + content);
+        } else if (type === "note-replace" && oldText) {
+          const current = mdView.editor.getValue();
+          if (current.includes(oldText)) {
+            mdView.editor.setValue(current.replace(oldText, content));
+          }
+        } else if (type === "note-delete") {
+          // note-delete uses old= parameter for the text to delete
+          const target = oldText || content;
+          const current = mdView.editor.getValue();
+          if (current.includes(target)) {
+            mdView.editor.setValue(current.replace(target, ""));
+          }
+        }
+      } catch { /* silent */ }
+    }
+
+    // Briefly show a single activity message if edits were made, then clear it
+    if (editCount > 0) {
+      this.chatMessages.push({
+        role: "activity",
+        content: `已编辑笔记 (${editCount} 处)`,
+        timestamp: Date.now(),
+      });
+      this.render();
+      this.scrollChatToBottom();
+      // Auto-clear after 2 seconds
+      setTimeout(() => {
+        this.clearActivity();
+        this.render();
+      }, 2000);
+    }
+  }
+
   private async getActiveNoteContent(): Promise<{ name: string; content: string } | null> {
+    // Read from editor buffer (NOT vault file) to ensure any unsaved
+    // edits — including the agent's own modifications — are visible.
+    const mdView = this.getActiveMarkdownView();
+    if (!mdView) return null;
     const file = this.plugin.app.workspace.getActiveFile();
     if (!file) return null;
     try {
-      let content = await this.plugin.app.vault.read(file);
-      // Truncate long notes to ~4000 chars to avoid bloating system prompt
+      let content = mdView.editor.getValue();
       if (content.length > 4000) {
-        content = content.slice(0, 4000) + "\n\n...(内容已截断)";
+        content = content.slice(0, 1500)
+          + "\n\n...(中间内容已省略)...\n\n"
+          + content.slice(-2500);
       }
       return { name: file.name, content };
     } catch {
