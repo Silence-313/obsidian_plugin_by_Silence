@@ -234,5 +234,28 @@ export class HomepageSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           })
       );
+
+    // --- Note Assistant Section ---
+    containerEl.createEl("h3", { text: "笔记助手" });
+
+    new Setting(containerEl)
+      .setName("启用方式")
+      .setDesc("在首页侧边栏中，将「笔记助手」组件拖入「已添加组件」即可开启。当编辑 Markdown 笔记时，助手会以悬浮窗形式自动出现。");
+
+    new Setting(containerEl)
+      .setName("默认同步笔记内容")
+      .setDesc("开启后，每次提问时自动将当前编辑的笔记内容附在问题后面作为上下文。可在浮窗中随时切换。")
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.noteAssistant.syncNoteContent)
+          .onChange(async (value) => {
+            this.plugin.settings.noteAssistant.syncNoteContent = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("API Key")
+      .setDesc("复用 LLM Wiki 的 DeepSeek API Key，无需单独配置。");
   }
 }

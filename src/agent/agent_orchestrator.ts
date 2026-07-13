@@ -37,6 +37,12 @@ export interface OrchestratorConfig {
   addTodo: (text: string, color: string, date: string, startTime: string, endTime: string) => void;
   deleteTodo: (id: string) => void;
   requestUrl: (opts: { url: string; method?: string }) => Promise<{ status: number; json: any; text: string }>;
+  // Note editing callbacks (optional, for note-assistant component)
+  getActiveNoteContent?: () => string;
+  insertIntoNote?: (text: string) => boolean;
+  replaceInNote?: (oldText: string, newText: string) => boolean;
+  appendToNote?: (text: string) => boolean;
+  getNoteSelection?: () => string;
 }
 
 export interface ToolCallResult {
@@ -76,6 +82,32 @@ export interface AgentHealth {
 const MAX_CONSECUTIVE_ERRORS = 5;
 const LLM_TIMEOUT_MS = 60_000; // 60 second timeout for LLM calls
 const MAX_SYSTEM_PROMPT_CHARS = 8_000;
+
+/** Detect tool result errors in both plain-text ("Error:...") and JSON ({"error":"..."}) forms. */
+function isToolResultError(result: string): boolean {
+  if (result.startsWith("Error:")) return true;
+  if (result.startsWith('{"error":')) return true;
+  return false;
+}
+
+/** Format tool result for injection into system prompt, with human-readable summary. */
+function formatToolResultSection(toolName: string, result: string): string {
+  let summary = "";
+  try {
+    const parsed = JSON.parse(result);
+    if (parsed.error) {
+      summary = `\n**结果: 执行失败** — ${parsed.error}`;
+    } else if (parsed.matched !== undefined && parsed.matched === 0) {
+      summary = `\n**结果: 没有找到匹配的待办事项。** 请如实告诉用户今天没有任何待办，不要编造内容。`;
+    } else if (parsed.success === true && parsed.count !== undefined) {
+      const items = parsed.todos?.map((t: any) => `  - ${t.text}`).join("\n") || "";
+      summary = `\n**结果: 成功** — 已添加 ${parsed.count} 条待办到 ${parsed.date}${items ? ":\n" + items : ""}`;
+    } else if (parsed.todos && Array.isArray(parsed.todos)) {
+      summary = `\n**结果: 查询成功** — 找到 ${parsed.returned || parsed.todos.length} 条待办`;
+    }
+  } catch { /* not JSON, use raw */ }
+  return `\n## 工具执行结果\n工具 "${toolName}" 的执行结果:${summary}\n原始输出: ${result.substring(0, 600)}\n`;
+}
 
 // ── Tool Definitions (keep compatible with existing AGENT_TOOLS) ──
 
@@ -248,6 +280,61 @@ const AGENT_TOOLS = [
       },
     },
   },
+  {
+    type: "function" as const,
+    function: {
+      name: "insert_into_note",
+      description: "在光标位置插入文本。用于在用户当前编辑的笔记中插入内容，如补全段落、添加注释、插入代码片段等。",
+      parameters: {
+        type: "object" as const,
+        properties: {
+          text: { type: "string", description: "要插入的文本内容" },
+        },
+        required: ["text"],
+      },
+    },
+  },
+  {
+    type: "function" as const,
+    function: {
+      name: "replace_in_note",
+      description: "在用户当前编辑的笔记中查找并替换指定文本。用于修改笔记中的内容。oldText 必须精确匹配笔记中的某段文本。",
+      parameters: {
+        type: "object" as const,
+        properties: {
+          oldText: { type: "string", description: "要被替换的原文本（需精确匹配）" },
+          newText: { type: "string", description: "替换后的新文本" },
+        },
+        required: ["oldText", "newText"],
+      },
+    },
+  },
+  {
+    type: "function" as const,
+    function: {
+      name: "append_to_note",
+      description: "在用户当前编辑的笔记末尾追加文本。用于添加新的章节、总结、或补充内容。",
+      parameters: {
+        type: "object" as const,
+        properties: {
+          text: { type: "string", description: "要追加到笔记末尾的文本" },
+        },
+        required: ["text"],
+      },
+    },
+  },
+  {
+    type: "function" as const,
+    function: {
+      name: "get_note_selection",
+      description: "获取用户在笔记中当前选中的文本。用于理解用户正在关注的具体内容。",
+      parameters: {
+        type: "object" as const,
+        properties: {},
+        required: [],
+      },
+    },
+  },
 ];
 
 // ── Orchestrator ────────────────────────────────────────────
@@ -382,6 +469,39 @@ export class AgentOrchestrator {
     return sanitized;
   }
 
+  /** Extract todo items from user query text (markdown bullets, numbered items, delimiters). */
+  private extractTodoItems(text: string): Array<{ text: string; priority?: string }> {
+    const items: Array<{ text: string; priority?: string }> = [];
+    // Split by newlines, filter empty
+    const lines = text.split(/\n/).map(l => l.trim()).filter(Boolean);
+    // Try markdown list: "- xxx", "* xxx", "• xxx", "+ xxx"
+    const bulletLines = lines.filter(l => /^[-*•+] /.test(l));
+    if (bulletLines.length > 0) {
+      for (const line of bulletLines) {
+        const content = line.replace(/^[-*•+] /, "").trim();
+        if (content && content.length < 200) items.push({ text: content });
+      }
+      return items;
+    }
+    // Try numbered list: "1. xxx"
+    const numLines = lines.filter(l => /^\d+[\.\)、] /.test(l));
+    if (numLines.length > 0) {
+      for (const line of numLines) {
+        const content = line.replace(/^\d+[\.\)、] /, "").trim();
+        if (content && content.length < 200) items.push({ text: content });
+      }
+      return items;
+    }
+    // Try Chinese delimiters: 、or ，splitting
+    for (const line of lines) {
+      const parts = line.split(/[、，]/).map(s => s.trim()).filter(s => s.length > 0 && s.length < 200);
+      if (parts.length >= 2) {
+        for (const p of parts) items.push({ text: p });
+      }
+    }
+    return items;
+  }
+
   // ── Health Check ───────────────────────────────────────────
 
   /**
@@ -476,7 +596,16 @@ export class AgentOrchestrator {
         wikiContext: memoryContext.wikiResults.map(r => r.content).join("\n"),
         conceptContext: memoryContext.conceptReasoning,
         episodicContext: memoryContext.episodicContext,
-        availableTools: ["web_search", "get_todos", "add_todos", "delete_todo", "get_todo_stats", "get_current_time", "list_wiki_files", "read_wiki_file", "write_wiki_file", "delete_wiki_file", "search_wiki"],
+        availableTools: [
+            "web_search", "get_todos", "add_todos", "delete_todo", "get_todo_stats",
+            "get_current_time", "list_wiki_files", "read_wiki_file", "write_wiki_file",
+            "delete_wiki_file", "search_wiki",
+            // Note editing tools (only available when editor callbacks are provided)
+            ...(this.config.insertIntoNote ? ["insert_into_note" as const] : []),
+            ...(this.config.replaceInNote ? ["replace_in_note" as const] : []),
+            ...(this.config.appendToNote ? ["append_to_note" as const] : []),
+            ...(this.config.getNoteSelection ? ["get_note_selection" as const] : []),
+          ],
         availableSkills: this.skillRegistry.getAll(),
       };
 
@@ -506,13 +635,12 @@ export class AgentOrchestrator {
             if (/今天/.test(queryForTool)) toolArgs.date = new Date().toISOString().split("T")[0];
             if (/未完成|还没做/.test(queryForTool)) toolArgs.status = "pending";
           } else if (toolName === "add_todos") {
-            // Heuristic: parse date and todo items from user query
             const now = new Date();
-            if (/今天/.test(sanitizedText)) {
-              toolArgs.date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
-            } else {
-              toolArgs.date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
-            }
+            const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+            toolArgs.date = /今天/.test(sanitizedText) ? dateStr : dateStr;
+            // Extract todo items from query: markdown bullets, numbered items, or delimited list
+            const items = this.extractTodoItems(sanitizedText);
+            if (items.length > 0) toolArgs.todos = items;
           } else if (toolName === "search_wiki") {
             toolArgs.query = queryForTool;
           } else if (toolName === "list_wiki_files") {
@@ -526,7 +654,7 @@ export class AgentOrchestrator {
 
         toolCalls.push({
           toolName,
-          success: !proactiveToolResult.startsWith("Error:"),
+          success: !isToolResultError(proactiveToolResult),
           result: proactiveToolResult,
           latencyMs: toolLatency,
         });
@@ -534,7 +662,7 @@ export class AgentOrchestrator {
         // Record tool usage
         this.toolMemory.recordCall(
           toolName,
-          { success: !proactiveToolResult.startsWith("Error:"), latencyMs: toolLatency, responseQuality: 0.7 },
+          { success: !isToolResultError(proactiveToolResult), latencyMs: toolLatency, responseQuality: 0.7 },
           sanitizedText,
           route.tool,
         );
@@ -582,7 +710,7 @@ export class AgentOrchestrator {
     // 4. Build enhanced system prompt (with reasoning context)
     // If proactive tool/skill was executed, inject result into system prompt
     const toolResultSection = proactiveToolResult
-      ? `\n## 工具执行结果\n工具 "${toolDecisionResult?.decision.tool_name}" 的执行结果:\n${proactiveToolResult.substring(0, 800)}\n`
+      ? formatToolResultSection(toolDecisionResult?.decision.tool_name || "unknown", proactiveToolResult)
       : "";
     const skillResultSection = proactiveSkillResult?.success
       ? `\n## 技能执行结果\n技能 "${toolDecisionResult?.decision.skill_name}" 的执行结果:\n${JSON.stringify(proactiveSkillResult.data).substring(0, 800)}\n`
@@ -1389,6 +1517,37 @@ ${memory.conceptReasoning}
           returned: topResults.length,
           results: topResults,
         }, null, 2);
+      }
+
+      case "insert_into_note": {
+        if (!this.config.insertIntoNote) return JSON.stringify({ error: "当前环境不支持编辑笔记（无活跃编辑器）" });
+        const text = (args.text || "") as string;
+        if (!text) return JSON.stringify({ error: "text 不能为空" });
+        const ok = this.config.insertIntoNote(text);
+        return JSON.stringify({ success: ok, action: "inserted", textLength: text.length }, null, 2);
+      }
+
+      case "replace_in_note": {
+        if (!this.config.replaceInNote) return JSON.stringify({ error: "当前环境不支持编辑笔记（无活跃编辑器）" });
+        const oldText = (args.oldText || "") as string;
+        const newText = (args.newText || "") as string;
+        if (!oldText) return JSON.stringify({ error: "oldText 不能为空" });
+        const ok = this.config.replaceInNote(oldText, newText);
+        return JSON.stringify({ success: ok, action: ok ? "replaced" : "not_found" }, null, 2);
+      }
+
+      case "append_to_note": {
+        if (!this.config.appendToNote) return JSON.stringify({ error: "当前环境不支持编辑笔记（无活跃编辑器）" });
+        const text = (args.text || "") as string;
+        if (!text) return JSON.stringify({ error: "text 不能为空" });
+        const ok = this.config.appendToNote(text);
+        return JSON.stringify({ success: ok, action: "appended", textLength: text.length }, null, 2);
+      }
+
+      case "get_note_selection": {
+        if (!this.config.getNoteSelection) return JSON.stringify({ error: "当前环境不支持获取笔记选区（无活跃编辑器）" });
+        const selection = this.config.getNoteSelection();
+        return JSON.stringify({ hasSelection: selection.length > 0, selection, length: selection.length }, null, 2);
       }
 
       default:

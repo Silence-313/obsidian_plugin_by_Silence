@@ -130,6 +130,7 @@ styles.css           # 日历 hover 样式
 | `RunBtnWidget` | `components/code-runner-editor.ts` | CM6 WidgetType：代码块行尾 ▶ 按钮，点击执行 |
 | `OutputWidget` | `components/code-runner-editor.ts` | CM6 WidgetType：block-level 输出渲染 |
 | `CodeRunner` (共享引擎) | `components/code-runner.ts` | `executeCode(lang, code)` + `renderOutput()` 纯逻辑，被两个入口共用 |
+| `NoteAssistantComponent` | `components/note-assistant.ts` | 笔记助手：悬浮窗聊天 UI、拖拽/缩放/FAB 最小化、笔记内容同步、编辑器写入回调 |
 
 ### 组件架构
 
@@ -157,6 +158,7 @@ LlmWikiComponent 的 agent 逻辑全部委托给 `AgentOrchestrator`（`src/agen
 - **应用启动器** (`id: "applauncher"`)：macOS 应用启动面板，emoji 图标网格展示。点击后 `open -a` 启动应用，AppleScript 自动定位应用窗口到卡片屏幕位置（`activate` + `set position/size`），实现"视觉嵌入"效果。启动后卡片显示运行状态，支持 📍 重新对齐、✕ 关闭应用。默认预置 VS Code、终端、Chrome、访达等 8 个应用，可自定义添加（名称/图标/AppleScript 名称/启动命令）。默认未添加
 - **内联预测** (`id: "inlinepredict"`)：编辑器中输入时，获取光标前当前段落文本，发送星火 Spark Lite API 预测后续内容，以半透明斜体幽灵文本显示在光标后。前缀匹配裁剪（用户输入匹配时只显示剩余部分），→ 右键接受，输入偏离时消失。CM6 ViewPlugin + StateField 实现，适用于所有 Markdown 编辑器。`requestUrl` 绕过 CORS。默认未添加
 - **代码运行** (`id: "coderunner"`)：笔记中代码块可点击运行，结果显示在代码块下方终端风格区域。支持 Python/JavaScript/Bash/C/C++，解释型直接 `exec`、编译型写临时文件编译运行。阅读视图用 `registerMarkdownCodeBlockProcessor`（**会替换默认渲染，必须自行渲染代码块内容**），实时预览用 CM6 ViewPlugin + Decoration.widget。10s 超时，输出截断 5000 字符。默认未添加
+- **笔记助手** (`id: "noteassistant"`)：编辑 Markdown 笔记时自动出现悬浮对话窗口（`position: fixed`，非 Obsidian ItemView），可与 AI Agent 讨论笔记中的知识点。Header 栏可拖拽移动，右下角 CSS resize 缩放，`—` 最小化为右下角可拖拽 FAB 浮动按钮（💬），最小化/展开时浮窗右下角与 FAB 中心对齐实现"从按钮展开"效果。工具栏 `📄 同步` 开关控制是否将当前笔记内容注入每次提问（截断 4000 字符）。Agent 拥有 4 个笔记编辑工具：`insert_into_note`、`replace_in_note`、`append_to_note`、`get_note_selection`，可直接操作活跃编辑器内容。复用 LLM Wiki 的 DeepSeek API Key（Keychain + 明文降级 + 自动迁移）。仅在活跃 leaf 为 markdown 时显示，切换到其他视图自动最小化。默认未添加
 
 ### 卡片系统
 
@@ -402,3 +404,16 @@ vault 中安装了 `hot-reload` 插件，需要在 homepage 插件目录有 `.ho
 - 能力层三层统一：Tool / Skill / SearchProvider 都实现 Capability 抽象
 - Planner + Execution Engine：替代 switch/case 工具选择
 - 不可变 PipelineContext：每个 stage 返回新实例
+
+### 笔记助手实现细节
+
+- **悬浮框架构**：`NoteAssistantComponent` 直接操作 `document.body`，不经过 Obsidian ItemView 或 WorkspaceLeaf。`position: fixed; z-index: 1000` 的 div，挂载在 body 上。生命周期由 `plugin.ts` 的 `active-leaf-change` 事件驱动，检查 `activeLeaf?.view?.getViewType() === "markdown"` 而非仅检查 `mdLeaves.length`。
+- **拖拽**：Header 区域 `pointerdown/move/up` + `setPointerCapture`，排除 button 子元素。`Math.max(0, ...)` 防越界。
+- **缩放**：CSS `resize: both` + `ResizeObserver` 保存 `floatW/floatH`。
+- **FAB 悬浮球**：44×44px 圆形 `position: fixed`，click 展开、pointer 拖拽（保留 right/bottom 偏移存储，拖拽后不丢失位置）。hover `scale(1.1)`。
+- **最小化/展开对称**：`minimize()` 将 FAB 中心置于浮窗右下角（`fabCenter = (floatX+floatW, floatY+floatH)`）；`restore()` 将浮窗右下角对齐 FAB 中心（`floatX = fabCenterX - floatW`），产生"从按钮展开"效果。
+- **API Key**：3 层加载 — Keychain → 明文 `settings.llmWiki.apiKey`（自动迁移到 Keychain）→ 空。与 LLM Wiki 共享同一 Keychain service name。
+- **笔记同步**：`syncNoteContent` 开启时，`handleSend()` 通过 `app.vault.read(activeFile)` 读取笔记内容（截断 4000 字符），用 markdown code fence 包裹后注入用户消息。开关状态持久化到 `settings.noteAssistant.syncNoteContent`。
+- **笔记编辑工具**：4 个新 Agent 工具（`insert_into_note`/`replace_in_note`/`append_to_note`/`get_note_selection`），通过 `OrchestratorConfig` 的可选回调注入——`NoteAssistantComponent.getOrCreateOrchestrator()` 传入编辑器操作方法，`executeToolLocal()` 在无回调时返回"当前环境不支持编辑笔记"。仅在笔记助手场景可用，LLM Wiki 不受影响。
+- **`OrchestratorConfig` 新增字段**：`getActiveNoteContent?`、`insertIntoNote?`、`replaceInNote?`、`appendToNote?`、`getNoteSelection?`，均为可选。`availableTools` 通过 spread 语法条件性包含笔记工具。
+- **无关闭按钮**：Header 仅保留 `—` 最小化按钮，无 `✕` 关闭。切换到非 markdown 视图时自动最小化，组件移除时 `destroy()` 清理所有 DOM。

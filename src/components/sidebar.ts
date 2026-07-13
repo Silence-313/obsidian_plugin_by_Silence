@@ -119,6 +119,7 @@ export class SidebarComponent {
       study: `<svg width="28" height="28" viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.7"><rect x="2" y="4" width="24" height="17" rx="2"/><line x1="6" y1="8" x2="22" y2="8"/><line x1="6" y1="12" x2="18" y2="12"/><line x1="6" y1="16" x2="14" y2="16"/></svg>`,
       inlinepredict: `<svg width="28" height="28" viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.7"><path d="M14 4l1.5 5.5L21 8l-4 4.5L20 17l-5.5-2L14 20l-1.5-5.5L7 17l2.5-4.5L7 8l5 1.5z"/></svg>`,
       coderunner: `<svg width="28" height="28" viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.7"><polyline points="11 7 4 14 11 21"/><polyline points="17 7 24 14 17 21"/><line x1="14" y1="5" x2="14" y2="23"/></svg>`,
+      noteassistant: `<svg width="28" height="28" viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.7"><circle cx="11" cy="10" r="2"/><circle cx="19" cy="10" r="2"/><path d="M8 17c1.5-2.5 4-4 7-4s5.5 1.5 7 4"/><path d="M14 24c5.523 0 10-4.477 10-10S19.523 4 14 4 4 8.477 4 14s4.477 10 10 10z"/></svg>`,
     };
     return icons[id] || `<svg width="28" height="28" viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.7"><rect x="4" y="4" width="20" height="20" rx="3"/></svg>`;
   }

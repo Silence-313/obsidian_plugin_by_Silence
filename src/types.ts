@@ -62,6 +62,10 @@ export interface InlinePredictSettings {
   contextChars: number;
 }
 
+export interface NoteAssistantSettings {
+  syncNoteContent: boolean;
+}
+
 export interface HomepageSettings {
   userName: string;
   todos: TodoItem[];
@@ -74,4 +78,5 @@ export interface HomepageSettings {
   llmWiki: LlmWikiSettings;
   appLauncher: AppLauncherSettings;
   inlinePredict: InlinePredictSettings;
+  noteAssistant: NoteAssistantSettings;
 }

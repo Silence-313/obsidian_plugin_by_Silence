@@ -167,7 +167,7 @@ export default class HomepageView extends ItemView {
           overflow: hidden;
           width: 820px;
           height: 420px;
-          min-width: 520px;
+          min-width: 600px;
           min-height: 320px;
           max-width: 100%;
           border-radius: 14px;
@@ -206,7 +206,7 @@ export default class HomepageView extends ItemView {
             </div>
             <div style="display: flex; flex: 1; min-height: 0;">
             <div id="homepage-stats" style="
-              width: 100px;
+              width: 220px;
               padding: 10px 8px;
               border-right: 1px solid var(--background-modifier-border);
               display: flex;
@@ -614,6 +614,7 @@ export default class HomepageView extends ItemView {
       this.schedule.renderStats();
       this.schedule.renderCalendar();
       if (this.isComponentAdded("todolist")) {
+        this.todolist.selectedDate = this.schedule.selectedDate;
         this.todolist.renderEmbedded();
       } else {
         this.schedule.renderTodo();
@@ -626,6 +627,7 @@ export default class HomepageView extends ItemView {
         this.schedule.renderStats();
         this.schedule.renderCalendar();
         if (this.isComponentAdded("todolist")) {
+          this.todolist.selectedDate = this.schedule.selectedDate;
           this.todolist.renderEmbedded();
         } else {
           this.schedule.renderTodo();
@@ -677,6 +679,10 @@ export default class HomepageView extends ItemView {
 
     if (!this.isComponentAdded("study")) {
       this.app.workspace.detachLeavesOfType(VIEW_TYPE_STUDY);
+    }
+
+    if (!this.isComponentAdded("noteassistant")) {
+      this.plugin.destroyNoteAssistant();
     }
 
     this.observeCardResizes();

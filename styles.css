@@ -59,3 +59,8 @@
 .cm-run-btn {
   vertical-align: middle;
 }
+
+/* Note Assistant - Minimize button (FAB) hover scale */
+#note-assistant-fab:hover {
+  transform: scale(1.1);
+}

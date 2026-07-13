@@ -1,6 +1,6 @@
 import { Plugin } from "obsidian";
 import type { HomepageSettings } from "./types";
-import { VIEW_TYPE_HOMEPAGE, VIEW_TYPE_STUDY, DEFAULT_COMPONENTS, DEFAULT_SETTINGS, DEFAULT_STUDY_SETTINGS, DEFAULT_LLMWIKI_SETTINGS, DEFAULT_APP_LAUNCHER_SETTINGS, DEFAULT_INLINE_PREDICT_SETTINGS } from "./constants";
+import { VIEW_TYPE_HOMEPAGE, VIEW_TYPE_STUDY, DEFAULT_COMPONENTS, DEFAULT_SETTINGS, DEFAULT_STUDY_SETTINGS, DEFAULT_LLMWIKI_SETTINGS, DEFAULT_APP_LAUNCHER_SETTINGS, DEFAULT_INLINE_PREDICT_SETTINGS, DEFAULT_NOTE_ASSISTANT_SETTINGS } from "./constants";
 import { loadApiKeyFromKeychain } from "./utils";
 import HomepageView from "./view";
 import StudyView from "./study-view";
@@ -9,11 +9,14 @@ import { HomepageSettingTab } from "./settings";
 import { createInlinePredictExtension } from "./components/inline-predict";
 import { registerMarkdownCodeRunners } from "./components/code-runner-markdown";
 import { createCodeRunnerEditorExtension } from "./components/code-runner-editor";
+import { NoteAssistantComponent } from "./components/note-assistant";
 
 export default class HomepagePlugin extends Plugin {
   settings: HomepageSettings = DEFAULT_SETTINGS;
   studyController!: StudyController;
+  noteAssistant: NoteAssistantComponent | null = null;
   private studyCloseTimer: number | null = null;
+  private noteAssistantCloseTimer: number | null = null;
   private wikiMaintenanceTimer: number | null = null;
 
   async onload() {
@@ -54,6 +57,18 @@ export default class HomepagePlugin extends Plugin {
       callback: () => this.runWikiMaintenance(),
     });
 
+    this.addCommand({
+      id: "open-note-assistant",
+      name: "打开笔记助手",
+      callback: () => this.showNoteAssistant(),
+    });
+
+    this.addCommand({
+      id: "toggle-note-assistant",
+      name: "笔记助手：显示/隐藏",
+      callback: () => this.toggleNoteAssistant(),
+    });
+
     this.registerEvent(
       this.app.workspace.on("active-leaf-change", () => {
         if (!this.studyController.isEnabled()) return;
@@ -83,6 +98,13 @@ export default class HomepagePlugin extends Plugin {
       })
     );
 
+    // Note Assistant: auto show/hide when editing markdown
+    this.registerEvent(
+      this.app.workspace.on("active-leaf-change", () => {
+        this.handleNoteAssistantVisibility();
+      })
+    );
+
     this.app.workspace.onLayoutReady(() => {
       const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_HOMEPAGE);
       if (existing.length === 0) {
@@ -109,6 +131,7 @@ export default class HomepagePlugin extends Plugin {
       window.clearInterval(this.wikiMaintenanceTimer);
       this.wikiMaintenanceTimer = null;
     }
+    this.destroyNoteAssistant();
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_HOMEPAGE);
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_STUDY);
   }
@@ -180,9 +203,77 @@ export default class HomepagePlugin extends Plugin {
     } else {
       this.settings.inlinePredict = Object.assign({}, DEFAULT_INLINE_PREDICT_SETTINGS, this.settings.inlinePredict);
     }
+    if (!this.settings.noteAssistant) {
+      this.settings.noteAssistant = Object.assign({}, DEFAULT_NOTE_ASSISTANT_SETTINGS);
+    } else {
+      this.settings.noteAssistant = Object.assign({}, DEFAULT_NOTE_ASSISTANT_SETTINGS, this.settings.noteAssistant);
+    }
   }
 
   async saveSettings() {
     await this.saveData(this.settings);
+  }
+
+  // ── Note Assistant ──────────────────────────────────────────
+
+  private handleNoteAssistantVisibility() {
+    const enabled = this.settings.components.some(
+      c => c.id === "noteassistant" && c.added
+    );
+    if (!enabled) {
+      this.destroyNoteAssistant();
+      return;
+    }
+
+    // Check if the active leaf is a markdown editor (not just whether any md leaves exist)
+    const activeLeaf = this.app.workspace.activeLeaf;
+    const isActiveMarkdown = activeLeaf?.view?.getViewType() === "markdown";
+
+    if (!isActiveMarkdown) {
+      // User switched away from markdown → minimize (keep alive, no debounce needed)
+      this.noteAssistant?.minimize();
+      return;
+    }
+
+    // Active leaf IS markdown: create/restore floating window
+    if (!this.noteAssistant || this.noteAssistant.isDestroyed()) {
+      this.noteAssistant = new NoteAssistantComponent(this);
+    }
+
+    if (this.noteAssistant.isMinimized() || !this.noteAssistant.isVisible()) {
+      this.noteAssistant.restore();
+    }
+
+    // Update current note name
+    const activeFile = this.app.workspace.getActiveFile();
+    if (activeFile) {
+      this.noteAssistant.updateNoteInfo(activeFile.name);
+    }
+  }
+
+  showNoteAssistant() {
+    if (!this.noteAssistant || this.noteAssistant.isDestroyed()) {
+      this.noteAssistant = new NoteAssistantComponent(this);
+    }
+    this.noteAssistant.restore();
+    const activeFile = this.app.workspace.getActiveFile();
+    if (activeFile) {
+      this.noteAssistant.updateNoteInfo(activeFile.name);
+    }
+  }
+
+  toggleNoteAssistant() {
+    if (this.noteAssistant && this.noteAssistant.isVisible() && !this.noteAssistant.isMinimized()) {
+      this.noteAssistant.minimize();
+    } else {
+      this.showNoteAssistant();
+    }
+  }
+
+  destroyNoteAssistant() {
+    if (this.noteAssistant) {
+      this.noteAssistant.destroy();
+      this.noteAssistant = null;
+    }
   }
 }
