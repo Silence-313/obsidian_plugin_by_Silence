@@ -257,5 +257,46 @@ export class HomepageSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("API Key")
       .setDesc("复用 LLM Wiki 的 DeepSeek API Key，无需单独配置。");
+
+    // --- Memory Review Section ---
+    containerEl.createEl("h3", { text: "记忆复习" });
+
+    new Setting(containerEl)
+      .setName("启用方式")
+      .setDesc("在首页侧边栏中，将「记忆复习」组件拖入「已添加组件」即可开启。组件会从最近修改的笔记中自动生成记忆卡片或测试题目。");
+
+    new Setting(containerEl)
+      .setName("题目数量")
+      .setDesc("每次生成复习内容的题目数量")
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption("10", "10")
+          .addOption("20", "20")
+          .addOption("30", "30")
+          .addOption("50", "50")
+          .setValue(String(this.plugin.settings.memoryReview.questionCount))
+          .onChange(async (value) => {
+            this.plugin.settings.memoryReview.questionCount = parseInt(value);
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("默认模式")
+      .setDesc("记忆卡片：正面问题 + 点击翻转查看答案 / 题目：混合选择题和简答题")
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption("cards", "📝 记忆卡片")
+          .addOption("quiz", "❓ 题目")
+          .setValue(this.plugin.settings.memoryReview.mode)
+          .onChange(async (value) => {
+            this.plugin.settings.memoryReview.mode = value as "cards" | "quiz";
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("API Key")
+      .setDesc("复用 LLM Wiki 的 DeepSeek API Key，无需单独配置。");
   }
 }

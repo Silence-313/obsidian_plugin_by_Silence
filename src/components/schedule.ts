@@ -49,83 +49,167 @@ export class ScheduleComponent {
 
     const stats = this.getDateColorStats(this.selectedDate);
     const [, m, d] = this.selectedDate.split("-");
+    const coEnabled = this.view.isComponentAdded("todolist");
+
+    if (!coEnabled) {
+      // Original compact view — stats only
+      statsContainer.innerHTML = `
+        <div style="font-size: 11px; font-weight: 600; color: var(--text-normal); margin-bottom: 3px;">
+          ${Number(m)}月${Number(d)}日
+        </div>
+        ${stats.map(s => {
+          const pct = s.total > 0 ? Math.round((s.done / s.total) * 100) : 0;
+          return `
+            <div style="display: flex; flex-direction: column; gap: 1px;">
+              <div style="display: flex; align-items: center; gap: 3px;">
+                <span style="width: 7px; height: 7px; border-radius: 50%; background: ${s.color}; flex-shrink: 0;"></span>
+                <span style="font-size: 10px; color: var(--text-muted);">${s.label}</span>
+                <span style="font-size: 10px; color: var(--text-faint); margin-left: auto;">${s.done}/${s.total}</span>
+              </div>
+              <div style="width: 100%; height: 3px; border-radius: 2px; background: var(--background-modifier-border); overflow: hidden;">
+                <div style="width: ${pct}%; height: 100%; border-radius: 2px; background: ${s.color}; transition: width 0.3s;"></div>
+              </div>
+            </div>
+          `;
+        }).join("")}
+        ${(() => {
+          const yesterdayKey = this.getYesterdayKey(this.selectedDate);
+          const undone = this.view.plugin.settings.todos.filter(t => t.date === yesterdayKey && !t.done);
+          if (undone.length === 0) return "";
+          const [, yMonth, yDay] = yesterdayKey.split("-");
+          return `
+            <div style="margin-top: 12px; border-top: 1px solid var(--background-modifier-border); padding-top: 8px;">
+              <div style="font-size: 10px; font-weight: 600; color: var(--text-muted); margin-bottom: 4px; display: flex; align-items: center; justify-content: space-between;">
+                <span>昨${Number(yMonth)}.${Number(yDay)}</span>
+                <span class="yesterday-sync-all" style="cursor: pointer; color: var(--interactive-accent); font-weight: 400;">全→</span>
+              </div>
+              ${undone.map(t => `
+                <div class="yesterday-item" data-id="${t.id}" style="display: flex; align-items: center; gap: 3px; padding: 2px 0; font-size: 10px;">
+                  <span style="width: 5px; height: 5px; border-radius: 50%; background: ${t.color}; flex-shrink: 0;"></span>
+                  <span style="flex: 1; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(t.text)}</span>
+                  <span class="yesterday-sync-one" style="cursor: pointer; color: var(--text-faint); font-size: 11px; flex-shrink: 0;">→</span>
+                </div>
+              `).join("")}
+            </div>
+          `;
+        })()}
+        ${(() => {
+          const doneToday = this.view.plugin.settings.todos.filter(t => t.date === this.selectedDate && t.done);
+          if (doneToday.length === 0) return "";
+          return `
+            <div style="margin-top: 12px; border-top: 1px solid var(--background-modifier-border); padding-top: 8px;">
+              <div style="font-size: 10px; font-weight: 600; color: var(--text-muted); margin-bottom: 4px;">已完成</div>
+              ${doneToday.map(t => `
+                <div style="font-size: 10px; color: var(--text-faint); text-decoration: line-through; padding: 1px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                  <span style="display:inline-block; width:5px; height:5px; border-radius:50%; background:${t.color}; vertical-align:middle; margin-right:3px;"></span>
+                  ${escapeHtml(t.text)}
+                </div>
+              `).join("")}
+            </div>
+          `;
+        })()}
+      `;
+    } else {
+      const selectedTodos = this.view.plugin.settings.todos.filter(t => t.date === this.selectedDate);
+      const pending = selectedTodos.filter(t => !t.done);
+      const done = selectedTodos.filter(t => t.done);
 
     statsContainer.innerHTML = `
-      <div style="font-size: 11px; font-weight: 600; color: var(--text-normal); margin-bottom: 3px;">
+      <div style="font-size: 13px; font-weight: 600; color: var(--text-normal); margin-bottom: 6px;">
         ${Number(m)}月${Number(d)}日
+        <span style="font-size: 10px; color: var(--text-faint); font-weight: 400; margin-left: 4px;">${selectedTodos.length}项</span>
       </div>
-      ${stats.map(s => {
-        const pct = s.total > 0 ? Math.round((s.done / s.total) * 100) : 0;
-        return `
-          <div style="display: flex; flex-direction: column; gap: 1px;">
-            <div style="display: flex; align-items: center; gap: 3px;">
-              <span style="
-                width: 7px; height: 7px; border-radius: 50%; background: ${s.color}; flex-shrink: 0;
-              "></span>
-              <span style="font-size: 10px; color: var(--text-muted);">${s.label}</span>
-              <span style="font-size: 10px; color: var(--text-faint); margin-left: auto;">${s.done}/${s.total}</span>
-            </div>
-            <div style="
-              width: 100%; height: 3px; border-radius: 2px;
-              background: var(--background-modifier-border);
-              overflow: hidden;
+      ${pending.length > 0 ? `
+        <div style="margin-bottom: 8px;">
+          <div style="font-size: 10px; font-weight: 600; color: var(--text-muted); margin-bottom: 3px;">待办 (${pending.length})</div>
+          ${pending.map(t => `
+            <div class="stats-todo-item" data-id="${t.id}" style="
+              display: flex; align-items: center; gap: 4px;
+              padding: 2px 0; font-size: 11px;
             ">
-              <div style="
-                width: ${pct}%; height: 100%; border-radius: 2px;
-                background: ${s.color};
-                transition: width 0.3s;
-              "></div>
+              <span class="stats-todo-check" style="cursor:pointer; font-size:13px; color:${t.color}; flex-shrink:0; line-height:1;">☐</span>
+              <span style="flex:1; color:var(--text-normal); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(t.text)}</span>
+              ${t.startTime ? `<span style="font-size:9px; color:var(--text-faint); flex-shrink:0;">${t.startTime}${t.endTime ? `-${t.endTime}` : ""}</span>` : ""}
+              <span class="stats-todo-delete" style="cursor:pointer; color:var(--text-faint); font-size:14px; flex-shrink:0; visibility:hidden; line-height:1;">×</span>
             </div>
-          </div>
-        `;
-      }).join("")}
+          `).join("")}
+        </div>
+      ` : `<div style="font-size:10px; color:var(--text-faint); margin-bottom:8px; text-align:center;">暂无待办</div>`}
+      ${stats.length > 0 ? `
+        <div style="border-top:1px solid var(--background-modifier-border); padding-top:6px; margin-bottom:8px;">
+          ${stats.map(s => {
+            const pct = s.total > 0 ? Math.round((s.done / s.total) * 100) : 0;
+            return `
+              <div style="display:flex; align-items:center; gap:4px; margin-bottom:2px;">
+                <span style="width:6px; height:6px; border-radius:50%; background:${s.color}; flex-shrink:0;"></span>
+                <span style="font-size:9px; color:var(--text-muted);">${s.label}</span>
+                <span style="font-size:9px; color:var(--text-faint); margin-left:auto;">${s.done}/${s.total}</span>
+                <div style="width:30px; height:3px; border-radius:2px; background:var(--background-modifier-border); overflow:hidden;">
+                  <div style="width:${pct}%; height:100%; border-radius:2px; background:${s.color};"></div>
+                </div>
+              </div>
+            `;
+          }).join("")}
+        </div>
+      ` : ""}
       ${(() => {
         const yesterdayKey = this.getYesterdayKey(this.selectedDate);
         const undone = this.view.plugin.settings.todos.filter(t => t.date === yesterdayKey && !t.done);
         if (undone.length === 0) return "";
         const [, yMonth, yDay] = yesterdayKey.split("-");
         return `
-          <div style="margin-top: 12px; border-top: 1px solid var(--background-modifier-border); padding-top: 8px;">
-            <div style="font-size: 10px; font-weight: 600; color: var(--text-muted); margin-bottom: 4px; display: flex; align-items: center; justify-content: space-between;">
+          <div style="border-top:1px solid var(--background-modifier-border); padding-top:6px; margin-bottom:8px;">
+            <div style="font-size:10px; font-weight:600; color:var(--text-muted); margin-bottom:3px; display:flex; align-items:center; justify-content:space-between;">
               <span>昨${Number(yMonth)}.${Number(yDay)}</span>
-              <span class="yesterday-sync-all" style="cursor: pointer; color: var(--interactive-accent); font-weight: 400;">全→</span>
+              <span class="yesterday-sync-all" style="cursor:pointer; color:var(--interactive-accent); font-weight:400;">全→</span>
             </div>
             ${undone.map(t => `
               <div class="yesterday-item" data-id="${t.id}" style="
-                display: flex; align-items: center; gap: 3px;
-                padding: 2px 0; font-size: 10px;
+                display:flex; align-items:center; gap:3px; padding:2px 0; font-size:10px;
               ">
-                <span style="
-                  width: 5px; height: 5px; border-radius: 50%; background: ${t.color}; flex-shrink: 0;
-                "></span>
-                <span style="
-                  flex: 1; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-                ">${escapeHtml(t.text)}</span>
-                <span class="yesterday-sync-one" style="
-                  cursor: pointer; color: var(--text-faint); font-size: 11px; flex-shrink: 0;
-                ">→</span>
+                <span style="width:5px; height:5px; border-radius:50%; background:${t.color}; flex-shrink:0;"></span>
+                <span style="flex:1; color:var(--text-muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(t.text)}</span>
+                <span class="yesterday-sync-one" style="cursor:pointer; color:var(--text-faint); font-size:11px; flex-shrink:0;">→</span>
               </div>
             `).join("")}
           </div>
         `;
       })()}
-      ${(() => {
-        const doneToday = this.view.plugin.settings.todos.filter(t => t.date === this.selectedDate && t.done);
-        if (doneToday.length === 0) return "";
-        return `
-          <div style="margin-top: 12px; border-top: 1px solid var(--background-modifier-border); padding-top: 8px;">
-            <div style="font-size: 10px; font-weight: 600; color: var(--text-muted); margin-bottom: 4px;">已完成</div>
-            ${doneToday.map(t => `
-              <div style="font-size: 10px; color: var(--text-faint); text-decoration: line-through; padding: 1px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-                <span style="display:inline-block; width:5px; height:5px; border-radius:50%; background:${t.color}; vertical-align:middle; margin-right:3px;"></span>
-                ${escapeHtml(t.text)}
-              </div>
-            `).join("")}
-          </div>
-        `;
-      })()}
+      ${done.length > 0 ? `
+        <div style="border-top:1px solid var(--background-modifier-border); padding-top:6px;">
+          <div style="font-size:10px; font-weight:600; color:var(--text-muted); margin-bottom:3px;">已完成 (${done.length})</div>
+          ${done.map(t => `
+            <div class="stats-todo-item" data-id="${t.id}" style="
+              display:flex; align-items:center; gap:4px; padding:2px 0; font-size:11px; opacity:0.6;
+            ">
+              <span class="stats-todo-check" style="cursor:pointer; font-size:13px; color:var(--text-faint); flex-shrink:0; line-height:1;">☑</span>
+              <span style="flex:1; color:var(--text-faint); text-decoration:line-through; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(t.text)}</span>
+              <span class="stats-todo-delete" style="cursor:pointer; color:var(--text-faint); font-size:14px; flex-shrink:0; visibility:hidden; line-height:1;">×</span>
+            </div>
+          `).join("")}
+        </div>
+      ` : ""}
     `;
+    } // end coEnabled else
 
+    // Bind stats todo toggle and delete
+    statsContainer.querySelectorAll(".stats-todo-check").forEach(el => {
+      el.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const id = ((e.currentTarget as HTMLElement).parentElement as HTMLElement)?.dataset?.id;
+        if (id) this.view.toggleTodo(id);
+      });
+    });
+    statsContainer.querySelectorAll(".stats-todo-delete").forEach(el => {
+      el.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const id = ((e.currentTarget as HTMLElement).parentElement as HTMLElement)?.dataset?.id;
+        if (id) this.view.deleteTodo(id);
+      });
+    });
+    this.view.setupHoverDeleteButton(".stats-todo-item", ".stats-todo-delete");
+
+    // Bind yesterday sync buttons
     statsContainer.querySelector(".yesterday-sync-all")?.addEventListener("click", () => this.view.syncAllYesterday());
     statsContainer.querySelectorAll(".yesterday-sync-one").forEach(el => {
       el.addEventListener("click", (e) => {
@@ -302,6 +386,7 @@ export class ScheduleComponent {
       this.renderStats();
       this.renderCalendar();
       this.renderTodo();
+      this.syncToTodoList();
     });
 
     calContainer.querySelectorAll(".calendar-day").forEach(el => {
@@ -310,8 +395,16 @@ export class ScheduleComponent {
         this.renderStats();
         this.renderCalendar();
         this.renderTodo();
+        this.syncToTodoList();
       });
     });
+  }
+
+  private syncToTodoList() {
+    if (this.view.isComponentAdded("todolist")) {
+      this.view.todolist.selectedDate = this.selectedDate;
+      this.view.todolist.renderEmbedded();
+    }
   }
 
   renderTodo() {

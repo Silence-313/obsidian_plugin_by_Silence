@@ -30,9 +30,9 @@ npm run lint       # TypeScript 类型检查
 ```
 src/                 # 源码目录
   main.ts            # 入口文件，单行 re-export plugin.ts
-  types.ts           # 所有 interface/type（TodoItem, ComponentInfo, CardLayout, HomepageSettings, StudySettings）
+  types.ts           # 所有 interface/type（TodoItem, ComponentInfo, CardLayout, HomepageSettings, StudySettings, MemoryReviewSettings）
   constants.ts       # 常量（VIEW_TYPE_HOMEPAGE, VIEW_TYPE_STUDY, DEFAULT_COMPONENTS, DEFAULT_SETTINGS, TODO_COLORS）
-  utils.ts           # 纯工具函数（formatDateKey, getTimePeriod, escapeHtml, formatTime, formatDate）
+  utils.ts           # 纯工具函数（formatDateKey, getTimePeriod, escapeHtml, formatTime, formatDate）+ callDeepSeek 共享 API 客户端
   plugin.ts          # HomepagePlugin 类 — 插件入口，注册 view/command/settingTab
   modals.ts          # TodoAddModal + DesktopFolderModal 弹窗类
   settings.ts        # HomepageSettingTab 设置面板
@@ -52,6 +52,8 @@ src/                 # 源码目录
 	    code-runner.ts       # CodeRunner 执行引擎 — executeCode() 支持 py/js/sh/c/cpp
 	    code-runner-markdown.ts # 阅读视图：registerMarkdownCodeBlockProcessor 注入 Run 按钮
 	    code-runner-editor.ts   # 实时预览：CM6 ViewPlugin 扫描代码块 + Decoration.widget
+tt    note-assistant.ts  # NoteAssistantComponent — 笔记助手：悬浮窗聊天 UI、标记式编辑、静默总结
+tt    memory-review.ts   # MemoryReviewComponent — 记忆复习：扫描最近笔记、LLM 生成卡片/题目、翻转/选择交互
   agent/             # Agent 模块 — 5 层认知系统
     index.ts          # 模块 barrel export
     agent_orchestrator.ts  # AgentOrchestrator — 中央管线（5 层全集成）
@@ -131,6 +133,7 @@ styles.css           # 日历 hover 样式
 | `OutputWidget` | `components/code-runner-editor.ts` | CM6 WidgetType：block-level 输出渲染 |
 | `CodeRunner` (共享引擎) | `components/code-runner.ts` | `executeCode(lang, code)` + `renderOutput()` 纯逻辑，被两个入口共用 |
 | `NoteAssistantComponent` | `components/note-assistant.ts` | 笔记助手：悬浮窗聊天 UI、拖拽/缩放/FAB 最小化、笔记内容同步、编辑器写入回调 |
+| `MemoryReviewComponent` | `components/memory-review.ts` | 记忆复习：扫描最近修改笔记、DeepSeek API 生成记忆卡片/题目、翻转/选择交互、数量/模式可配置 |
 
 ### 组件架构
 
@@ -159,6 +162,7 @@ LlmWikiComponent 的 agent 逻辑全部委托给 `AgentOrchestrator`（`src/agen
 - **内联预测** (`id: "inlinepredict"`)：编辑器中输入时，获取光标前当前段落文本，发送星火 Spark Lite API 预测后续内容，以半透明斜体幽灵文本显示在光标后。前缀匹配裁剪（用户输入匹配时只显示剩余部分），→ 右键接受，输入偏离时消失。CM6 ViewPlugin + StateField 实现，适用于所有 Markdown 编辑器。`requestUrl` 绕过 CORS。默认未添加
 - **代码运行** (`id: "coderunner"`)：笔记中代码块可点击运行，结果显示在代码块下方终端风格区域。支持 Python/JavaScript/Bash/C/C++，解释型直接 `exec`、编译型写临时文件编译运行。阅读视图用 `registerMarkdownCodeBlockProcessor`（**会替换默认渲染，必须自行渲染代码块内容**），实时预览用 CM6 ViewPlugin + Decoration.widget。10s 超时，输出截断 5000 字符。默认未添加
 - **笔记助手** (`id: "noteassistant"`)：编辑 Markdown 笔记时自动出现悬浮对话窗口（`position: fixed`，非 Obsidian ItemView），可与 AI Agent 讨论知识点。Header 可拖拽移动，CSS resize 缩放，`—` 最小化为可拖拽 FAB（💬），最小化/展开时浮窗右下角与 FAB 中心对称对齐。工具栏 `📄 同步` 开关注入笔记内容到提问上下文，`📝 总结` 按钮生成结构化总结写入笔记末尾（自动检测替换已有总结）。Agent 通过标记代码块（note-insert/append/replace/delete）直接编辑笔记，打开笔记时静默生成概要。复用 LLM Wiki API Key。仅在活跃 markdown leaf 时显示，切换视图自动最小化。默认未添加
+- **记忆复习** (`id: "memoryreview"`)：扫描最近 24h 内修改的笔记，无结果则自动拓展时间窗口（48h→72h→168h→720h），排除系统目录。调用 DeepSeek API 基于笔记内容生成记忆卡片或测验题目。**记忆卡片**：正面问题 + 点击 CSS 3D 翻转查看答案，Grid 叠放自适应高度。**题目模式**：混合选择题（4 选项，点击高亮正确/错误）+ 简答题（textarea 输入 + 查看参考答案）。数量可选 10/20/30/50，segmented control 切换模式。API Key 复用 LLM Wiki Keychain。默认未添加
 
 ### 卡片系统
 
@@ -419,3 +423,13 @@ vault 中安装了 `hot-reload` 插件，需要在 homepage 插件目录有 `.ho
 - **静默笔记总结**：`plugin.ts` 的 `handleNoteAssistantVisibility()` 追踪 `_lastNoteAssistantPath`，切换到新笔记时自动调用 `summarizeCurrentNote()`——发送总结 prompt 给 Agent，结果以 `📝 **笔记概要**: ...` 消息插入聊天顶部（`assistant` 角色，参与对话历史），最多保留 3 条。笔记 ≤3000 字符全文发送，>3000 字符按间隔采样（取 1000 字符 / 跳 1000 字符循环），用 `\n\n...\n\n` 拼接。
 - **📝 总结按钮**：Header 栏按钮，`summarizeToNote()` 读取编辑器全文（无截断），正则检测 `## 总结`/`## AI 总结` 等已有总结段落——存在则截掉后基于剩余内容生成新总结替换，不存在则追加 `---\n## AI 总结\n\n{内容}` 到笔记末尾。结构化输出（核心主题/关键要点/整体概要）。
 - **无关闭按钮**：Header 仅保留 `📄 同步`、`📝 总结`、`🗑 清空`、`—` 最小化按钮，无 `✕` 关闭。切换到非 markdown 视图时自动最小化。
+
+### 记忆复习实现细节
+
+- **文件扫描**：`vault.getFiles()` + 按扩展名 `.md` 过滤，排除 `.obsidian`/`.trash`/`.git`/`llm-wiki`/`agent-memory`/`_attachments`/`assets` 目录。按 `file.stat.mtime` 降序排列，时间窗口递进直到找到 ≥3 篇笔记，最多 20 篇。
+- **内容截断**：每篇笔记头 1500 + 尾 1500 字符（中间省略），`Promise.allSettled` 并行读取。跳过读取失败的文件并在 `sourceInfo` 中报告。
+- **API 调用**：复用 `utils.ts` 中的 `callDeepSeek()` 共享客户端，60s AbortController 超时。API Key 从 Keychain 加载（`loadApiKeyFromKeychain()`），失败回退到 `settings.llmWiki.apiKey` 明文。
+- **JSON 解析**：`parseResponse()` 从 LLM 响应中正则提取 code fence 内的 JSON，失败时回退为纯文本单卡片。每项逐字段 `safeStr()` 强转字符串 + 验证类型。
+- **XSS 防护**：所有外部数据（LLM 响应、API 错误消息）渲染前经 `safeStr()` + `escapeHtml()` 双层净化，textarea 用户输入回显时也转义。
+- **重入保护**：`handleRefresh()` 用 `this.loading` 布尔锁防止并发 API 调用。`bindToolbarEvents()` 与 `bindBodyEvents()` 分离，避免 updateBody 累加重复监听器。
+- **设置持久化**：`MemoryReviewSettings` 存储在 `settings.memoryReview` 中。设置面板提供题目数量下拉框（10/20/30/50）和默认模式下拉框（记忆卡片/题目）。

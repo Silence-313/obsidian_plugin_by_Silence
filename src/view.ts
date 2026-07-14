@@ -11,6 +11,7 @@ import { TodoListComponent } from "./components/todolist";
 import { LlmWikiComponent } from "./components/llmwiki";
 import { WikiGraphComponent } from "./components/wiki-graph";
 import { AppLauncherComponent } from "./components/app-launcher";
+import { MemoryReviewComponent } from "./components/memory-review";
 
 
 export default class HomepageView extends ItemView {
@@ -27,6 +28,7 @@ export default class HomepageView extends ItemView {
   llmwiki: LlmWikiComponent;
   wikigraph: WikiGraphComponent;
   applauncher: AppLauncherComponent;
+  memoryreview: MemoryReviewComponent;
 
   constructor(leaf: WorkspaceLeaf, plugin: HomepagePlugin) {
     super(leaf);
@@ -39,6 +41,7 @@ export default class HomepageView extends ItemView {
     this.llmwiki = new LlmWikiComponent(this);
     this.wikigraph = new WikiGraphComponent(this);
     this.applauncher = new AppLauncherComponent(this);
+    this.memoryreview = new MemoryReviewComponent(this);
   }
 
   getViewType(): string {
@@ -590,6 +593,30 @@ export default class HomepageView extends ItemView {
             position: relative;
           "></div>
         </div>
+        <div id="homepage-memoryreview-wrapper" data-component-id="memoryreview" data-component-wrapper="true" style="
+          position: absolute;
+          resize: both;
+          overflow: hidden;
+          width: 560px;
+          height: 460px;
+          min-width: 380px;
+          min-height: 320px;
+          max-width: 100%;
+          border-radius: 14px;
+          box-shadow: 0 4px 24px rgba(0,0,0,0.12), 0 0 0 1px var(--background-modifier-border);
+          display: ${this.isComponentAdded("memoryreview") ? "block" : "none"};
+        ">
+          <div id="homepage-memoryreview-card" style="
+            display: flex;
+            flex-direction: column;
+            width: 100%;
+            height: 100%;
+            background: var(--background-primary);
+            overflow: hidden;
+            border-radius: 14px;
+            position: relative;
+          "></div>
+        </div>
       </div>
       <div id="homepage-sidebar" style="
         position: absolute;
@@ -677,6 +704,11 @@ export default class HomepageView extends ItemView {
       this.setupCardPosition(container, "applauncher", "#homepage-applauncher-wrapper");
     }
 
+    if (this.isComponentAdded("memoryreview")) {
+      this.memoryreview.render();
+      this.setupCardPosition(container, "memoryreview", "#homepage-memoryreview-wrapper");
+    }
+
     if (!this.isComponentAdded("study")) {
       this.app.workspace.detachLeavesOfType(VIEW_TYPE_STUDY);
     }
@@ -712,6 +744,7 @@ export default class HomepageView extends ItemView {
     if (target.closest(".desktop-item")) return true;
     if (target.closest(".todolist-tab, .todolist-check, .todolist-delete, .todolist-add, .todolist-gantt-bar")) return true;
     if (target.closest(".applauncher-item")) return true;
+    if (target.closest(".memoryreview-item, .memoryreview-option, .memoryreview-count-btn, .memoryreview-mode-btn, .memoryreview-refresh-btn, .memoryreview-reveal-btn, .memoryreview-short-input")) return true;
     return false;
   }
 

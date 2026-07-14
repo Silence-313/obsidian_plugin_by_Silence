@@ -6,6 +6,7 @@ import { TodoAddModal } from "../modals";
 export class TodoListComponent {
   private view: HomepageView;
   mode: "today" | "week" | "month" = "today";
+  selectedDate: string | null = null; // set by schedule when co-enabled to show a specific date's Gantt
 
   constructor(view: HomepageView) {
     this.view = view;
@@ -85,6 +86,22 @@ export class TodoListComponent {
 
   renderContent(content: Element) {
     const scrollTop = (content as HTMLElement).scrollTop;
+
+    // When co-enabled with schedule and a specific calendar date is selected,
+    // show that date's Gantt chart (if timed todos exist) or simple list.
+    if (this.selectedDate && this.view.isComponentAdded("schedule")) {
+      const todos = this.view.plugin.settings.todos.filter(t => t.date === this.selectedDate);
+      const timed = todos.filter(t => t.startTime && t.endTime);
+      const untimed = todos.filter(t => !t.startTime || !t.endTime);
+
+      if (timed.length > 0) {
+        this.renderGanttView(content, timed, untimed);
+      } else {
+        this.renderSimpleList(content, todos, true);
+      }
+      (content as HTMLElement).scrollTop = scrollTop;
+      return;
+    }
 
     const today = new Date();
     const todayKey = formatDateKey(today.getFullYear(), today.getMonth(), today.getDate());
@@ -312,6 +329,7 @@ export class TodoListComponent {
 
     this.view.containerEl.querySelectorAll(".todolist-tab").forEach(el => {
       el.addEventListener("click", (e) => {
+        this.selectedDate = null;
         this.mode = (e.currentTarget as HTMLElement).dataset.mode as "today" | "week" | "month";
         this.refresh();
       });

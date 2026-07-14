@@ -1,4 +1,4 @@
-import type { AppLauncherSettings, ComponentInfo, HomepageSettings, InlinePredictSettings, LlmWikiSettings, NoteAssistantSettings, StudySettings } from "./types";
+import type { AppLauncherSettings, ComponentInfo, HomepageSettings, InlinePredictSettings, LlmWikiSettings, MemoryReviewSettings, NoteAssistantSettings, StudySettings } from "./types";
 
 export const VIEW_TYPE_HOMEPAGE = "homepage-view";
 export const VIEW_TYPE_STUDY = "study-mode-view";
@@ -15,6 +15,7 @@ export const DEFAULT_COMPONENTS: ComponentInfo[] = [
   { id: "inlinepredict", name: "内联预测", added: false },
   { id: "coderunner", name: "代码运行", added: false },
   { id: "noteassistant", name: "笔记助手", added: false },
+  { id: "memoryreview", name: "记忆复习", added: false },
 ];
 
 export const DEFAULT_STUDY_SETTINGS: StudySettings = {
@@ -57,6 +58,11 @@ export const DEFAULT_NOTE_ASSISTANT_SETTINGS: NoteAssistantSettings = {
   syncNoteContent: true,
 };
 
+export const DEFAULT_MEMORY_REVIEW_SETTINGS: MemoryReviewSettings = {
+  questionCount: 10,
+  mode: "cards",
+};
+
 export const DEFAULT_SETTINGS: HomepageSettings = {
   userName: "",
   todos: [],
@@ -70,6 +76,7 @@ export const DEFAULT_SETTINGS: HomepageSettings = {
   appLauncher: DEFAULT_APP_LAUNCHER_SETTINGS,
   inlinePredict: DEFAULT_INLINE_PREDICT_SETTINGS,
   noteAssistant: DEFAULT_NOTE_ASSISTANT_SETTINGS,
+  memoryReview: DEFAULT_MEMORY_REVIEW_SETTINGS,
 };
 
 export const TODO_COLORS = [

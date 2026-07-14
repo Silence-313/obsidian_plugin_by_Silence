@@ -90,3 +90,54 @@ export function deleteApiKeyFromKeychain(): boolean {
     return false;
   }
 }
+
+// ── Shared DeepSeek API helper ──────────────────────────────
+
+export interface DeepSeekCallOptions {
+  apiKey: string;
+  endpoint?: string;
+  model?: string;
+  temperature?: number;
+  maxTokens?: number;
+  signal?: AbortSignal;
+}
+
+/**
+ * Call the DeepSeek chat completions API (OpenAI-compatible endpoint).
+ * Returns the response text content. Throws on HTTP error or empty response.
+ */
+export async function callDeepSeek(
+  messages: Array<{ role: string; content: string }>,
+  options: DeepSeekCallOptions,
+): Promise<string> {
+  const endpoint = (options.endpoint || "https://api.deepseek.com/v1").replace(/\/$/, "");
+  const model = options.model || "deepseek-chat";
+
+  const body = {
+    model,
+    messages,
+    temperature: options.temperature ?? 0.7,
+    max_tokens: options.maxTokens ?? 4096,
+  };
+
+  const response = await fetch(`${endpoint}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${options.apiKey}`,
+    },
+    body: JSON.stringify(body),
+    signal: options.signal,
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`API 请求失败 (${response.status}): ${errText.substring(0, 200)}`);
+  }
+
+  const data = await response.json();
+  const text = data.choices?.[0]?.message?.content ?? "";
+  if (!text) throw new Error("API 返回空内容");
+
+  return text;
+}

@@ -1,6 +1,6 @@
 import { Plugin } from "obsidian";
 import type { HomepageSettings } from "./types";
-import { VIEW_TYPE_HOMEPAGE, VIEW_TYPE_STUDY, DEFAULT_COMPONENTS, DEFAULT_SETTINGS, DEFAULT_STUDY_SETTINGS, DEFAULT_LLMWIKI_SETTINGS, DEFAULT_APP_LAUNCHER_SETTINGS, DEFAULT_INLINE_PREDICT_SETTINGS, DEFAULT_NOTE_ASSISTANT_SETTINGS } from "./constants";
+import { VIEW_TYPE_HOMEPAGE, VIEW_TYPE_STUDY, DEFAULT_COMPONENTS, DEFAULT_SETTINGS, DEFAULT_STUDY_SETTINGS, DEFAULT_LLMWIKI_SETTINGS, DEFAULT_APP_LAUNCHER_SETTINGS, DEFAULT_INLINE_PREDICT_SETTINGS, DEFAULT_NOTE_ASSISTANT_SETTINGS, DEFAULT_MEMORY_REVIEW_SETTINGS } from "./constants";
 import { loadApiKeyFromKeychain } from "./utils";
 import HomepageView from "./view";
 import StudyView from "./study-view";
@@ -207,6 +207,11 @@ export default class HomepagePlugin extends Plugin {
       this.settings.noteAssistant = Object.assign({}, DEFAULT_NOTE_ASSISTANT_SETTINGS);
     } else {
       this.settings.noteAssistant = Object.assign({}, DEFAULT_NOTE_ASSISTANT_SETTINGS, this.settings.noteAssistant);
+    }
+    if (!this.settings.memoryReview) {
+      this.settings.memoryReview = Object.assign({}, DEFAULT_MEMORY_REVIEW_SETTINGS);
+    } else {
+      this.settings.memoryReview = Object.assign({}, DEFAULT_MEMORY_REVIEW_SETTINGS, this.settings.memoryReview);
     }
   }
 

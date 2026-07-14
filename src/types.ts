@@ -66,6 +66,31 @@ export interface NoteAssistantSettings {
   syncNoteContent: boolean;
 }
 
+export interface MemoryReviewSettings {
+  questionCount: number;  // 10 | 20 | 30 | 50
+  mode: "cards" | "quiz";
+}
+
+export interface MemoryCard {
+  question: string;
+  answer: string;
+}
+
+export type QuizQuestion = MultipleChoiceQuestion | ShortAnswerQuestion;
+
+export interface MultipleChoiceQuestion {
+  type: "choice";
+  question: string;
+  options: string[];    // 4 options
+  correctIndex: number; // 0-3
+}
+
+export interface ShortAnswerQuestion {
+  type: "short";
+  question: string;
+  referenceAnswer: string;
+}
+
 export interface HomepageSettings {
   userName: string;
   todos: TodoItem[];
@@ -79,4 +104,5 @@ export interface HomepageSettings {
   appLauncher: AppLauncherSettings;
   inlinePredict: InlinePredictSettings;
   noteAssistant: NoteAssistantSettings;
+  memoryReview: MemoryReviewSettings;
 }
