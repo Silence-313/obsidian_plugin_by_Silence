@@ -422,7 +422,7 @@ vault 中安装了 `hot-reload` 插件，需要在 homepage 插件目录有 `.ho
 - **`OrchestratorConfig` 新增字段**：`getActiveNoteContent?`、`insertIntoNote?`、`replaceInNote?`、`appendToNote?`、`getNoteSelection?`、`deleteFromNote?`，均为可选。`availableTools` 中仅 `get_note_selection` 条件性包含。
 - **静默笔记总结**：`plugin.ts` 的 `handleNoteAssistantVisibility()` 追踪 `_lastNoteAssistantPath`，切换到新笔记时自动调用 `summarizeCurrentNote()`——发送总结 prompt 给 Agent，结果以 `📝 **笔记概要**: ...` 消息插入聊天顶部（`assistant` 角色，参与对话历史），最多保留 3 条。笔记 ≤3000 字符全文发送，>3000 字符按间隔采样（取 1000 字符 / 跳 1000 字符循环），用 `\n\n...\n\n` 拼接。
 - **📝 总结按钮**：Header 栏按钮，`summarizeToNote()` 读取编辑器全文（无截断），正则检测 `## 总结`/`## AI 总结` 等已有总结段落——存在则截掉后基于剩余内容生成新总结替换，不存在则追加 `---\n## AI 总结\n\n{内容}` 到笔记末尾。结构化输出（核心主题/关键要点/整体概要）。
-- **无关闭按钮**：Header 仅保留 `📄 同步`、`📝 总结`、`🗑 清空`、`—` 最小化按钮，无 `✕` 关闭。切换到非 markdown 视图时自动最小化。
+- **无关闭按钮**：Header 仅保留 `📄 同步`、`📝 总结`、`🗑 清空`、`—` 最小化按钮，无 `✕` 关闭。切换到非 markdown 视图时自动隐藏（`hide()`，完全移除浮窗和 FAB，不在首页显示悬浮球）。手动点击 `—` 最小化仍显示 FAB。
 
 ### 记忆复习实现细节
 

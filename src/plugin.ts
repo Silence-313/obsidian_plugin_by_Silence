@@ -235,8 +235,8 @@ export default class HomepagePlugin extends Plugin {
     const isActiveMarkdown = activeLeaf?.view?.getViewType() === "markdown";
 
     if (!isActiveMarkdown) {
-      // User switched away from markdown → minimize (keep alive, no debounce needed)
-      this.noteAssistant?.minimize();
+      // User switched away from markdown → hide completely (no FAB on homepage)
+      this.noteAssistant?.hide();
       return;
     }
 
